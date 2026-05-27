@@ -18,68 +18,127 @@
         return `${diffDays} days ago`;
     }
 
-    // Extract date from post element WITHOUT clicking
-    function extractDateFromGridElement(postElement) {
-        // Method 1: Look for time element
-        const timeEl = postElement.querySelector('time');
-        if (timeEl) {
-            const datetime = timeEl.getAttribute('datetime');
-            if (datetime) return new Date(datetime);
-        }
+    // Wait for element to appear
+    function waitForElement(selector, timeout = 5000) {
+        return new Promise((resolve) => {
+            const startTime = Date.now();
+            const checkInterval = setInterval(() => {
+                const element = document.querySelector(selector);
+                if (element) {
+                    clearInterval(checkInterval);
+                    resolve(element);
+                } else if (Date.now() - startTime > timeout) {
+                    clearInterval(checkInterval);
+                    resolve(null);
+                }
+            }, 100);
+        });
+    }
+
+    // Extract exact date from opened post modal
+    function extractExactDateFromModal() {
+        // Look for time element in the modal
+        const timeElement = document.querySelector('div[role="dialog"] time, article[role="presentation"] time, time');
         
-        // Method 2: Look for data attributes with timestamp
-        const allElements = postElement.querySelectorAll('[datetime], [data-timestamp], [data-time]');
-        for (const el of allElements) {
-            const timestamp = el.getAttribute('datetime') || 
-                             el.getAttribute('data-timestamp') || 
-                             el.getAttribute('data-time');
-            if (timestamp && !isNaN(Date.parse(timestamp))) {
-                return new Date(timestamp);
+        if (timeElement) {
+            const datetime = timeElement.getAttribute('datetime');
+            if (datetime) {
+                return new Date(datetime);
+            }
+            
+            const timeText = timeElement.textContent.trim();
+            // Check for absolute date format like "January 15, 2024" or "May 27, 2026"
+            const absoluteMatch = timeText.match(/(\w+)\s+(\d{1,2}),?\s+(\d{4})/);
+            if (absoluteMatch) {
+                return new Date(absoluteMatch[1] + ' ' + absoluteMatch[2] + ', ' + absoluteMatch[3]);
+            }
+            
+            // Check for relative format like "2 days ago"
+            const relativeMatch = timeText.match(/(\d+)\s+(day|days)/i);
+            if (relativeMatch) {
+                const now = new Date();
+                return new Date(now - parseInt(relativeMatch[1]) * 86400000);
             }
         }
         
-        // Method 3: Look for aria-label containing date pattern
-        const ariaElements = postElement.querySelectorAll('[aria-label]');
+        // Alternative: look for aria-label with date
+        const ariaElements = document.querySelectorAll('div[role="dialog"] [aria-label], article[role="presentation"] [aria-label]');
         for (const el of ariaElements) {
             const label = el.getAttribute('aria-label');
-            if (label) {
-                // Look for patterns like "2 days ago", "January 15, 2024"
-                const patterns = [
-                    /(\d+)\s+days?\s+ago/i,
-                    /(\d+)\s+weeks?\s+ago/i,
-                    /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}/i
-                ];
-                
-                for (const pattern of patterns) {
-                    const match = label.match(pattern);
-                    if (match) {
-                        if (match[1] && label.includes('day')) {
-                            const now = new Date();
-                            return new Date(now - parseInt(match[1]) * 86400000);
-                        } else if (match[1] && label.includes('week')) {
-                            const now = new Date();
-                            return new Date(now - parseInt(match[1]) * 604800000);
-                        } else if (match[0].match(/\w+\s+\d+,?\s+\d{4}/)) {
-                            return new Date(match[0]);
-                        }
-                    }
-                }
+            const dateMatch = label?.match(/(\w+)\s+(\d{1,2}),?\s+(\d{4})/);
+            if (dateMatch) {
+                return new Date(dateMatch[0]);
             }
-        }
-        
-        // Method 4: Look for text content with date pattern
-        const textContent = postElement.innerText;
-        const dateMatch = textContent.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-        if (dateMatch) {
-            return new Date(dateMatch[3], dateMatch[1] - 1, dateMatch[2]);
         }
         
         return null;
     }
 
-    // Get all posts with their dates WITHOUT clicking
-    async function getAllPostsWithDates() {
-        // Scroll to load posts
+    // Click a post, extract date, close it - returns date
+    async function getExactPostDate(postLink, postIndex) {
+        return new Promise(async (resolve) => {
+            if (stopScanning) {
+                resolve(null);
+                return;
+            }
+            
+            try {
+                // Update progress
+                updateScanProgress(postIndex, totalPostsToScan);
+                
+                // Scroll post into view
+                postLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                await new Promise(r => setTimeout(r, 300));
+                
+                const postUrl = postLink.href;
+                const postId = postUrl.split('/p/')[1]?.replace('/', '') || 
+                               postUrl.split('/reel/')[1]?.replace('/', '');
+                
+                // Get preview image before clicking
+                let previewImg = null;
+                const imgElement = postLink.querySelector('img');
+                if (imgElement && imgElement.src && !imgElement.src.includes('blob:')) {
+                    previewImg = imgElement.src;
+                }
+                
+                // Click to open modal
+                postLink.click();
+                await new Promise(r => setTimeout(r, 600));
+                
+                // Wait for modal to appear
+                const modal = await waitForElement('div[role="dialog"], article[role="presentation"]', 4000);
+                
+                let postDate = null;
+                if (modal) {
+                    // Extract date from modal
+                    postDate = extractExactDateFromModal();
+                    
+                    // Close modal (press Escape)
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27 }));
+                    await new Promise(r => setTimeout(r, 300));
+                }
+                
+                if (postDate && !isNaN(postDate.getTime())) {
+                    resolve({
+                        url: postUrl,
+                        id: postId,
+                        date: postDate,
+                        preview: previewImg,
+                        index: postIndex
+                    });
+                } else {
+                    resolve(null);
+                }
+                
+            } catch (error) {
+                console.error(`Error getting post ${postIndex}:`, error);
+                resolve(null);
+            }
+        });
+    }
+
+    // Scroll to load all posts
+    async function loadAllPosts() {
         const scrollableDiv = document.querySelector('main') || document.body;
         let previousCount = 0;
         let attempts = 0;
@@ -102,6 +161,12 @@
                 break;
             }
         }
+    }
+
+    // Get exact dates for all posts by clicking each one
+    async function getAllPostsWithExactDates() {
+        // First, load all posts by scrolling
+        await loadAllPosts();
         
         // Get all post links
         const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
@@ -116,81 +181,18 @@
         for (let i = 0; i < postsToProcess.length; i++) {
             if (stopScanning) break;
             
-            updateScanProgress(i + 1, totalPostsToScan);
-            
-            const postLink = postsToProcess[i];
-            const postUrl = postLink.href;
-            const postId = postUrl.split('/p/')[1]?.replace('/', '') || 
-                           postUrl.split('/reel/')[1]?.replace('/', '');
-            
-            // Find the container that holds the post
-            let postContainer = postLink.closest('article') || 
-                               postLink.closest('div[role="presentation"]') ||
-                               postLink.parentElement;
-            
-            // Try to find the actual post container by traversing up
-            for (let j = 0; j < 5 && postContainer; j++) {
-                if (postContainer.querySelector('time') || 
-                    postContainer.querySelector('[aria-label*="day"]') ||
-                    postContainer.querySelector('[aria-label*="week"]')) {
-                    break;
-                }
-                postContainer = postContainer.parentElement;
+            const result = await getExactPostDate(postsToProcess[i], i + 1);
+            if (result) {
+                results.push(result);
             }
             
-            let postDate = null;
-            
-            if (postContainer) {
-                postDate = extractDateFromGridElement(postContainer);
-            }
-            
-            // If still no date, try a different approach - look for nearby time elements
-            if (!postDate) {
-                // Look for time elements near this post
-                const allTimes = document.querySelectorAll('time');
-                for (const timeEl of allTimes) {
-                    if (Math.abs(timeEl.getBoundingClientRect().top - postLink.getBoundingClientRect().top) < 200) {
-                        const datetime = timeEl.getAttribute('datetime');
-                        if (datetime) {
-                            postDate = new Date(datetime);
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            // Get preview image
-            let previewImg = null;
-            const imgElement = postLink.querySelector('img');
-            if (imgElement && imgElement.src && !imgElement.src.includes('blob:')) {
-                previewImg = imgElement.src;
-            }
-            
-            if (postDate && !isNaN(postDate.getTime())) {
-                results.push({
-                    url: postUrl,
-                    id: postId,
-                    date: postDate,
-                    preview: previewImg,
-                    index: i + 1
-                });
-            } else {
-                // Add with estimated date based on grid position as fallback
-                const now = new Date();
-                const estimatedDate = new Date(now - (i * 0.5) * 86400000);
-                results.push({
-                    url: postUrl,
-                    id: postId,
-                    date: estimatedDate,
-                    preview: previewImg,
-                    index: i + 1,
-                    estimated: true
-                });
-            }
+            // Small delay between posts to avoid rate limiting
+            await new Promise(r => setTimeout(r, 200));
         }
         
         // Sort by date (newest first)
         results.sort((a, b) => b.date - a.date);
+        
         return results;
     }
 
@@ -213,12 +215,18 @@
                     <button id="stopScanBtn" class="control-btn stop" disabled>⏹ Stop</button>
                     <button id="clearResultsBtn" class="control-btn clear">🗑 Clear</button>
                 </div>
-                <div class="progress-bar">
-                    <div id="scanProgress" class="progress-fill" style="width: 0%"></div>
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div id="scanProgress" class="progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div id="progressText" class="progress-text">0 / ${totalPostsToScan}</div>
                 </div>
             </div>
             <div class="panel-content">
-                <div class="info-message">📌 Click "Start Scan" to analyze last ${totalPostsToScan} posts<br><small>Reads dates directly from grid - NO posts will open!</small></div>
+                <div class="info-message">
+                    📌 Click "Start Scan" to analyze last ${totalPostsToScan} posts<br>
+                    <small>Posts will open briefly (to read exact dates) then close automatically</small>
+                </div>
             </div>
         `;
         
@@ -236,17 +244,22 @@
     function updateScanProgress(current, total) {
         const progress = (current / total) * 100;
         const progressBar = document.querySelector('#scanProgress');
-        const stats = document.querySelector('#scanStats');
+        const progressText = document.querySelector('#progressText');
         
         if (progressBar) {
             progressBar.style.width = `${progress}%`;
         }
-        if (stats) {
-            stats.textContent = `🔍 Scanning: ${current} / ${total} posts`;
+        if (progressText) {
+            progressText.textContent = `${current} / ${total}`;
         }
         
         if (badgeElement) {
             badgeElement.innerHTML = `🔍 ${current}/${total}`;
+        }
+        
+        const stats = document.querySelector('#scanStats');
+        if (stats) {
+            stats.textContent = `🔍 Scanning post ${current} of ${total}...`;
         }
     }
     
@@ -255,9 +268,11 @@
         const stats = document.querySelector('#scanStats');
         const startBtn = document.querySelector('#startScanBtn');
         const stopBtn = document.querySelector('#stopScanBtn');
+        const progressText = document.querySelector('#progressText');
         
         if (progressBar) progressBar.style.width = '100%';
-        if (stats) stats.textContent = `✅ Complete! Found ${results.length} posts`;
+        if (progressText) progressText.textContent = `✓ ${results.length} / ${totalPostsToScan}`;
+        if (stats) stats.textContent = `✅ Complete! Found ${results.length} posts with exact dates`;
         if (startBtn) startBtn.disabled = false;
         if (stopBtn) stopBtn.disabled = true;
     }
@@ -280,17 +295,20 @@
             for (let i = 0; i < results.length; i++) {
                 const post = results[i];
                 const daysAgo = getDaysAgo(post.date);
-                const dateStr = post.date.toLocaleDateString();
+                const dateStr = post.date.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: 'numeric' 
+                });
                 const medal = i === 0 ? '🥇 ' : i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : '📌 ';
-                const estimatedNote = post.estimated ? ' (estimated)' : '';
                 
                 html += `
                     <div class="post-item" data-url="${post.url}">
                         ${post.preview ? `<img src="${post.preview}" class="post-preview" crossorigin="anonymous" loading="lazy">` : '<div class="post-preview-placeholder">📷</div>'}
                         <div class="post-info">
-                            <div class="post-days">${medal}${daysAgo}${estimatedNote}</div>
+                            <div class="post-days">${medal}${daysAgo}</div>
                             <div class="post-date">📅 ${dateStr}</div>
-                            <div class="post-link">🔗 <span class="clickable-link">Click to open post</span></div>
+                            <div class="post-link">🔗 <span class="clickable-link">Open post →</span></div>
                         </div>
                     </div>
                 `;
@@ -298,13 +316,11 @@
             
             contentDiv.innerHTML = html;
             
-            // Add click handlers to open links ONLY when user clicks
+            // Make posts clickable to open in new tab
             document.querySelectorAll('.post-item').forEach(item => {
                 item.addEventListener('click', (e) => {
                     const url = item.getAttribute('data-url');
-                    if (url) {
-                        window.open(url, '_blank');
-                    }
+                    if (url) window.open(url, '_blank');
                 });
             });
         }
@@ -313,10 +329,10 @@
     function updateBadgeWithResults(results) {
         if (results.length > 0) {
             const newestDays = getDaysAgo(results[0].date);
-            badgeElement.innerHTML = `📅 ${newestDays} ago (${results.length})<span class="badge-arrow">▼</span>`;
+            badgeElement.innerHTML = `📅 ${newestDays} (${results.length})<span class="badge-arrow">▼</span>`;
             badgeElement.title = `Newest: ${newestDays} ago | Scanned ${results.length} posts`;
         } else {
-            badgeElement.innerHTML = `⚠️ No posts<span class="badge-arrow">▼</span>`;
+            badgeElement.innerHTML = `⚠️ 0 posts<span class="badge-arrow">▼</span>`;
         }
         badgeElement.classList.remove('scanning');
     }
@@ -337,16 +353,25 @@
         if (clearBtn) clearBtn.disabled = true;
         
         const contentDiv = panelElement.querySelector('.panel-content');
-        contentDiv.innerHTML = '<div class="loading-panel">🔍 Scanning posts...<br><small>Reading dates directly from grid - no posts will open</small></div>';
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Scanning posts...<br><small>Opening each post briefly to read exact date...</small></div>';
         
-        badgeElement.innerHTML = '🔍 Scanning...';
+        badgeElement.innerHTML = '🔍 0/30';
         badgeElement.classList.add('scanning');
         
-        currentScanPosts = await getAllPostsWithDates();
+        const startTime = Date.now();
+        
+        currentScanPosts = await getAllPostsWithExactDates();
+        
+        const scanTime = ((Date.now() - startTime) / 1000).toFixed(1);
         
         updatePanelWithResults(currentScanPosts);
         updateBadgeWithResults(currentScanPosts);
         updateScanComplete(currentScanPosts);
+        
+        const stats = document.querySelector('#scanStats');
+        if (stats && currentScanPosts.length > 0) {
+            stats.textContent = `✅ Complete! ${currentScanPosts.length} posts in ${scanTime}s`;
+        }
         
         if (startBtn) startBtn.disabled = false;
         if (stopBtn) stopBtn.disabled = true;
@@ -364,17 +389,19 @@
         const startBtn = document.querySelector('#startScanBtn');
         const stopBtn = document.querySelector('#stopScanBtn');
         const stats = document.querySelector('#scanStats');
+        const progressText = document.querySelector('#progressText');
         
         if (startBtn) startBtn.disabled = false;
         if (stopBtn) stopBtn.disabled = true;
         if (stats) stats.textContent = '⏹ Scan stopped by user';
+        if (progressText) progressText.textContent = `⏹ ${currentScanPosts.length} / ${totalPostsToScan}`;
         
-        badgeElement.innerHTML = `⏹ Stopped (${currentScanPosts.length} scanned)`;
+        badgeElement.innerHTML = `⏹ ${currentScanPosts.length}/30`;
         setTimeout(() => {
-            if (!isScanning) {
+            if (!isScanning && currentScanPosts.length > 0) {
                 updateBadgeWithResults(currentScanPosts);
             }
-        }, 2000);
+        }, 1500);
     }
     
     function clearResults() {
@@ -387,7 +414,9 @@
         if (stats) stats.textContent = 'Ready to scan';
         
         const progressBar = document.querySelector('#scanProgress');
+        const progressText = document.querySelector('#progressText');
         if (progressBar) progressBar.style.width = '0%';
+        if (progressText) progressText.textContent = `0 / ${totalPostsToScan}`;
         
         badgeElement.innerHTML = `📅 Ready<span class="badge-arrow">▼</span>`;
     }
@@ -576,7 +605,7 @@
                 display: flex;
                 gap: 10px;
                 justify-content: center;
-                margin-bottom: 10px;
+                margin-bottom: 12px;
             }
             
             .control-btn {
@@ -621,18 +650,33 @@
                 cursor: not-allowed;
             }
             
+            .progress-container {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
             .progress-bar {
+                flex: 1;
                 background: #dbdbdb;
                 border-radius: 10px;
                 overflow: hidden;
-                height: 6px;
+                height: 8px;
             }
             
             .progress-fill {
                 background: #0095f6;
                 width: 0%;
                 height: 100%;
-                transition: width 0.3s ease;
+                transition: width 0.2s ease;
+            }
+            
+            .progress-text {
+                font-size: 11px;
+                font-weight: 600;
+                color: #262626;
+                min-width: 45px;
+                text-align: right;
             }
             
             .panel-content {
@@ -721,7 +765,7 @@
         createBadge();
         addStyles();
         createPanel();
-        console.log('IG Scanner ready - Reads dates directly from grid, NO posts will open automatically!');
+        console.log('✅ IG Scanner ready - Opens posts briefly to get EXACT dates');
     }
 
     if (document.readyState === 'loading') {
