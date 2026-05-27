@@ -102,8 +102,10 @@ let totalPostsToScan = 30;  // Change to 10, 20, 50, etc.
 ```
 
 ### 🛡️ Permissions Explained
-**Permission**	                           **Why it's needed**
-`host_permissions: *.instagram.com/*`	      To run on Instagram profiles
-`content_scripts`	                        To inject the scanner into the page
+
+| **Permission**                          | **Why it's needed**          |
+| --------                                | --------                     |
+| `host_permissions: *.instagram.com/*`   | To run on Instagram profiles |
+| `content_scripts`	                     | To inject the scanner into thepage |
 
 **No unnecessary permissions** — no tracking, no data collection, no external APIs.
