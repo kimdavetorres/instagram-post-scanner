@@ -3,9 +3,8 @@
 
     let badgeElement = null;
     let isLoading = false;
-    let panelElement = null; // For expanded view
+    let panelElement = null;
 
-    // Helper: Calculate days ago
     function getDaysAgo(postDate) {
         const now = new Date();
         const diffTime = now - postDate;
@@ -16,93 +15,152 @@
         return `${diffDays} days ago`;
     }
 
-    // Scroll grid to load all posts
+    // Force scroll to load all posts
     async function loadAllPosts() {
         return new Promise((resolve) => {
-            const gridContainer = document.querySelector('main article div[role="presentation"]') || 
-                                  document.querySelector('main') || 
-                                  document.body;
-            
-            let previousCount = 0;
-            let stableCount = 0;
-            let maxScrolls = 30;
-            let scrollAttempts = 0;
+            const scrollableDiv = document.querySelector('main') || document.body;
+            let lastCount = 0;
+            let attempts = 0;
             
             function getPostCount() {
-                return document.querySelectorAll('a[href*="/p/"]').length;
+                return document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]').length;
             }
             
             function scroll() {
-                scrollAttempts++;
-                gridContainer.scrollTop = gridContainer.scrollHeight;
+                attempts++;
+                scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
                 
                 setTimeout(() => {
                     const newCount = getPostCount();
-                    
-                    if (newCount > previousCount) {
-                        previousCount = newCount;
-                        stableCount = 0;
-                        if (scrollAttempts < maxScrolls) {
-                            scroll();
-                        } else {
-                            resolve();
-                        }
+                    if (newCount > lastCount) {
+                        lastCount = newCount;
+                        if (attempts < 25) scroll();
+                        else resolve();
+                    } else if (attempts < 25) {
+                        scroll();
                     } else {
-                        stableCount++;
-                        if (stableCount >= 3 || scrollAttempts >= maxScrolls) {
-                            resolve();
-                        } else {
-                            scroll();
-                        }
+                        resolve();
                     }
-                }, 800);
+                }, 600);
             }
             
             scroll();
         });
     }
 
-    // Extract date and post info from a post link element
-    function getPostInfoFromGrid(postLink) {
-        let parent = postLink.closest('article') || postLink.closest('div[role="presentation"]');
-        if (!parent) parent = postLink.parentElement;
-        
-        // Get post URL
-        const postUrl = postLink.href;
-        const postId = postUrl.split('/p/')[1]?.replace('/', '') || postUrl.split('/reel/')[1]?.replace('/', '');
-        
-        // Look for <time> element
-        const timeElement = parent.querySelector('time');
-        let postDate = null;
-        
-        if (timeElement && timeElement.getAttribute('datetime')) {
-            postDate = new Date(timeElement.getAttribute('datetime'));
+    // METHOD 1: Extract date from time element
+    function extractFromTimeElement(element) {
+        const timeEl = element.querySelector('time');
+        if (timeEl) {
+            const datetime = timeEl.getAttribute('datetime');
+            if (datetime) return new Date(datetime);
+            
+            const dateText = timeEl.textContent;
+            // Try to parse relative text like "2 days ago"
+            const match = dateText.match(/(\d+)\s+(day|days)/i);
+            if (match) {
+                const now = new Date();
+                return new Date(now - parseInt(match[1]) * 86400000);
+            }
         }
-        
-        // Fallback: look for aria-label with relative date
-        if (!postDate) {
-            const allElements = parent.querySelectorAll('[aria-label]');
-            for (const el of allElements) {
-                const label = el.getAttribute('aria-label');
-                const match = label?.match(/(\d+)\s+(day|days|week|weeks|month|months)/i);
+        return null;
+    }
+
+    // METHOD 2: Extract from aria-label (Instagram often hides dates here)
+    function extractFromAriaLabel(element) {
+        const allElements = element.querySelectorAll('[aria-label]');
+        for (const el of allElements) {
+            const label = el.getAttribute('aria-label');
+            if (!label) continue;
+            
+            // Pattern: "2 days ago" or "Posted 3 weeks ago"
+            const patterns = [
+                /(\d+)\s+days?\s+ago/i,
+                /(\d+)\s+weeks?\s+ago/i,
+                /(\d+)\s+months?\s+ago/i,
+                /(\d+)\s+years?\s+ago/i,
+                /posted\s+(\d+)\s+(day|week|month)/i
+            ];
+            
+            for (const pattern of patterns) {
+                const match = label.match(pattern);
                 if (match) {
                     const num = parseInt(match[1]);
                     const now = new Date();
-                    if (match[2].toLowerCase().startsWith('day')) {
-                        postDate = new Date(now - num * 86400000);
-                        break;
-                    } else if (match[2].toLowerCase().startsWith('week')) {
-                        postDate = new Date(now - num * 604800000);
-                        break;
-                    }
+                    if (label.includes('week')) return new Date(now - num * 604800000);
+                    if (label.includes('month')) return new Date(now - num * 2592000000);
+                    if (label.includes('year')) return new Date(now - num * 31536000000);
+                    return new Date(now - num * 86400000);
                 }
             }
         }
+        return null;
+    }
+
+    // METHOD 3: Extract from nearby span with specific class patterns
+    function extractFromSpanText(element) {
+        const spans = element.querySelectorAll('span, div[class*="time"], div[class*="date"]');
+        for (const span of spans) {
+            const text = span.textContent;
+            const match = text.match(/(\d+)\s+(day|days|week|weeks)/i);
+            if (match) {
+                const now = new Date();
+                const num = parseInt(match[1]);
+                if (match[2].toLowerCase().startsWith('week')) {
+                    return new Date(now - num * 604800000);
+                }
+                return new Date(now - num * 86400000);
+            }
+        }
+        return null;
+    }
+
+    // METHOD 4: If all else fails, estimate by grid position
+    function estimateByGridPosition(index, totalPosts) {
+        // This is a fallback - assumes posts are roughly chronological
+        // Newer posts are at the beginning of the grid
+        const now = new Date();
+        const estimatedDaysAgo = Math.floor(index * 0.5); // Rough estimate
+        return new Date(now - estimatedDaysAgo * 86400000);
+    }
+
+    // Get post info using all methods
+    function getPostInfoFromGrid(postLink, index, totalPosts) {
+        let parent = postLink.closest('article') || postLink.closest('div[role="presentation"]');
+        if (!parent) parent = postLink.parentElement;
         
-        // Try to get image preview
+        const postUrl = postLink.href;
+        const postId = postUrl.split('/p/')[1]?.replace('/', '') || 
+                       postUrl.split('/reel/')[1]?.replace('/', '') ||
+                       `post-${index}`;
+        
+        // Try extraction methods in order
+        let postDate = extractFromTimeElement(parent);
+        if (!postDate) postDate = extractFromAriaLabel(parent);
+        if (!postDate) postDate = extractFromSpanText(parent);
+        
+        // If still no date, try looking at the post link's parent chain
+        if (!postDate) {
+            let walker = postLink.parentElement;
+            for (let i = 0; i < 5 && walker; i++) {
+                postDate = extractFromTimeElement(walker);
+                if (postDate) break;
+                postDate = extractFromAriaLabel(walker);
+                if (postDate) break;
+                walker = walker.parentElement;
+            }
+        }
+        
+        // Last resort: estimate based on position
+        const isEstimated = !postDate;
+        if (!postDate) {
+            postDate = estimateByGridPosition(index, totalPosts);
+        }
+        
+        // Get preview image
         let previewImg = null;
         const imgElement = parent.querySelector('img');
-        if (imgElement && imgElement.src) {
+        if (imgElement && imgElement.src && !imgElement.src.includes('blob:')) {
             previewImg = imgElement.src;
         }
         
@@ -110,15 +168,22 @@
             url: postUrl,
             id: postId,
             date: postDate,
-            preview: previewImg
+            preview: previewImg,
+            isEstimated: isEstimated
         };
     }
 
-    // Find last 3 posts by date (newest first)
+    // Find last 3 posts
     async function findLast3Posts() {
         await loadAllPosts();
         
-        const postLinks = document.querySelectorAll('a[href*="/p/"]');
+        // Wait a bit for any lazy-loaded content
+        await new Promise(r => setTimeout(r, 1000));
+        
+        // Get all post links
+        const postLinks = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+        
+        console.log(`Found ${postLinks.length} post links`); // Debug
         
         if (postLinks.length === 0) {
             return [];
@@ -126,14 +191,14 @@
         
         const postsWithInfo = [];
         
-        for (const link of postLinks) {
-            const info = getPostInfoFromGrid(link);
-            if (info.date && !isNaN(info.date.getTime())) {
+        for (let i = 0; i < postLinks.length; i++) {
+            const info = getPostInfoFromGrid(postLinks[i], i, postLinks.length);
+            if (info.date) {
                 postsWithInfo.push(info);
             }
         }
         
-        // Remove duplicates by post ID
+        // Remove duplicates
         const uniquePosts = [];
         const seenIds = new Set();
         for (const post of postsWithInfo) {
@@ -146,11 +211,12 @@
         // Sort by date (newest first)
         uniquePosts.sort((a, b) => b.date - a.date);
         
-        // Return last 3 posts
+        console.log(`Found ${uniquePosts.length} unique posts with dates`); // Debug
+        
         return uniquePosts.slice(0, 3);
     }
 
-    // Create expanded panel showing 3 posts
+    // Create panel
     function createPanel() {
         if (panelElement) return;
         
@@ -168,132 +234,12 @@
         
         document.body.appendChild(panelElement);
         
-        // Close button
         panelElement.querySelector('.panel-close').onclick = () => {
             panelElement.classList.remove('visible');
         };
-        
-        // Add styles for panel
-        const style = document.createElement('style');
-        style.textContent = `
-            #ig-posts-panel {
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%) scale(0.9);
-                width: 360px;
-                max-width: 90vw;
-                background: white;
-                border-radius: 16px;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-                z-index: 10001;
-                opacity: 0;
-                visibility: hidden;
-                transition: all 0.2s ease;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                overflow: hidden;
-            }
-            
-            #ig-posts-panel.visible {
-                opacity: 1;
-                visibility: visible;
-                transform: translate(-50%, -50%) scale(1);
-            }
-            
-            .panel-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 12px 16px;
-                background: #262626;
-                color: white;
-                font-weight: 600;
-                font-size: 14px;
-            }
-            
-            .panel-close {
-                background: none;
-                border: none;
-                color: white;
-                font-size: 24px;
-                cursor: pointer;
-                padding: 0;
-                line-height: 1;
-                opacity: 0.7;
-            }
-            
-            .panel-close:hover {
-                opacity: 1;
-            }
-            
-            .panel-content {
-                max-height: 500px;
-                overflow-y: auto;
-                background: #fafafa;
-            }
-            
-            .post-item {
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                padding: 12px 16px;
-                border-bottom: 1px solid #efefef;
-                text-decoration: none;
-                color: #262626;
-                transition: background 0.1s;
-            }
-            
-            .post-item:hover {
-                background: #efefef;
-            }
-            
-            .post-preview {
-                width: 48px;
-                height: 48px;
-                border-radius: 8px;
-                object-fit: cover;
-                background: #dbdbdb;
-            }
-            
-            .post-info {
-                flex: 1;
-            }
-            
-            .post-days {
-                font-weight: 700;
-                font-size: 15px;
-                color: #0095f6;
-            }
-            
-            .post-date {
-                font-size: 11px;
-                color: #8e8e8e;
-                margin-top: 4px;
-            }
-            
-            .post-link {
-                font-size: 12px;
-                color: #8e8e8e;
-                text-decoration: none;
-                word-break: break-all;
-            }
-            
-            .loading-panel {
-                text-align: center;
-                padding: 30px;
-                color: #8e8e8e;
-            }
-            
-            .empty-panel {
-                text-align: center;
-                padding: 30px;
-                color: #ed4956;
-            }
-        `;
-        document.head.appendChild(style);
     }
 
-    // Update panel with 3 posts
+    // Update panel
     async function updatePanel() {
         if (!panelElement) createPanel();
         
@@ -303,7 +249,12 @@
         const last3Posts = await findLast3Posts();
         
         if (last3Posts.length === 0) {
-            contentDiv.innerHTML = '<div class="empty-panel">❌ No posts found or unable to read dates</div>';
+            contentDiv.innerHTML = `
+                <div class="empty-panel">
+                    ❌ No posts found<br>
+                    <small>Try scrolling down manually first, then refresh</small>
+                </div>
+            `;
             return;
         }
         
@@ -312,14 +263,15 @@
             const post = last3Posts[i];
             const daysAgo = getDaysAgo(post.date);
             const dateStr = post.date.toLocaleDateString();
+            const estimatedNote = post.isEstimated ? ' (estimated)' : '';
             
             html += `
                 <a href="${post.url}" target="_blank" class="post-item">
-                    ${post.preview ? `<img src="${post.preview}" class="post-preview" onerror="this.style.display='none'">` : '<div class="post-preview" style="background:#dbdbdb; display:flex; align-items:center; justify-content:center;">📷</div>'}
+                    ${post.preview ? `<img src="${post.preview}" class="post-preview" crossorigin="anonymous">` : '<div class="post-preview-placeholder">📷</div>'}
                     <div class="post-info">
-                        <div class="post-days">${daysAgo}</div>
+                        <div class="post-days">${daysAgo}${estimatedNote}</div>
                         <div class="post-date">📅 ${dateStr}</div>
-                        <div class="post-link">instagram.com/p/${post.id?.slice(0, 15)}...</div>
+                        <div class="post-link">instagram.com/p/${post.id?.slice(0, 12)}...</div>
                     </div>
                 </a>
             `;
@@ -328,58 +280,42 @@
         contentDiv.innerHTML = html;
     }
 
-    // Update the main badge (compact view)
+    // Update badge
     async function updateBadge() {
         if (!badgeElement || isLoading) return;
         
         isLoading = true;
-        badgeElement.textContent = '🔄 Loading...';
+        badgeElement.innerHTML = '🔄 Loading...';
         badgeElement.classList.add('loading');
         
         const last3Posts = await findLast3Posts();
         
         if (last3Posts.length === 0) {
-            const isPrivate = document.body.innerText.includes('This Account is Private');
-            const postCountMatch = document.body.innerText.match(/(\d+)\s+posts/i);
-            
-            if (isPrivate) {
-                badgeElement.textContent = '🔒 Cannot determine';
-            } else if (postCountMatch && parseInt(postCountMatch[1]) === 0) {
-                badgeElement.textContent = '📭 No posts';
+            // Show helpful message
+            const postCount = document.querySelectorAll('a[href*="/p/"]').length;
+            if (postCount > 0) {
+                badgeElement.innerHTML = `⚠️ Found ${postCount} posts but no dates`;
+                badgeElement.title = 'Try scrolling down manually, then click refresh';
             } else {
-                badgeElement.textContent = '⚠️ No dates found';
+                badgeElement.innerHTML = '📭 Scroll to load posts';
+                badgeElement.title = 'Scroll down on the profile page first';
             }
             badgeElement.classList.remove('loading');
             isLoading = false;
             return;
         }
         
-        // Show summary on badge
         const newest = last3Posts[0];
         const newestDays = getDaysAgo(newest.date);
         badgeElement.innerHTML = `📅 Last: ${newestDays}<span class="badge-arrow">▼</span>`;
-        badgeElement.title = `Click to see last 3 posts`;
+        badgeElement.title = 'Click to see last 3 posts';
         badgeElement.classList.remove('loading');
         badgeElement.classList.add('has-data');
         
         isLoading = false;
     }
 
-    // Toggle panel when badge is clicked
-    function togglePanel(e) {
-        if (e.target.closest('.close-btn')) return;
-        
-        if (!panelElement) createPanel();
-        
-        if (panelElement.classList.contains('visible')) {
-            panelElement.classList.remove('visible');
-        } else {
-            updatePanel();
-            panelElement.classList.add('visible');
-        }
-    }
-
-    // Create draggable badge
+    // Create badge
     function createBadge() {
         if (badgeElement) return;
         
@@ -399,16 +335,25 @@
         document.body.appendChild(badgeElement);
         makeDraggable(badgeElement);
         
-        // Click to show/hide panel
-        badgeElement.addEventListener('click', togglePanel);
+        badgeElement.addEventListener('click', async (e) => {
+            if (e.target.className === 'close-btn') return;
+            if (!panelElement) createPanel();
+            
+            if (panelElement.classList.contains('visible')) {
+                panelElement.classList.remove('visible');
+            } else {
+                await updatePanel();
+                panelElement.classList.add('visible');
+            }
+        });
         
-        // Auto-update after 2 seconds
+        // Initial scan
         setTimeout(() => {
             updateBadge();
-        }, 2000);
+        }, 3000);
     }
 
-    // Draggable functionality
+    // Make draggable
     function makeDraggable(element) {
         let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
         
@@ -447,7 +392,7 @@
         }
     }
 
-    // Handle SPA navigation
+    // Navigation observer
     function observeNavigation() {
         let lastUrl = location.href;
         new MutationObserver(() => {
@@ -461,10 +406,31 @@
         }).observe(document, { subtree: true, childList: true });
     }
 
-    // Initialize
+    // Add CSS for placeholder
+    function addExtraStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            .post-preview-placeholder {
+                width: 48px;
+                height: 48px;
+                border-radius: 8px;
+                background: #dbdbdb;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 20px;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
     function init() {
         createBadge();
         observeNavigation();
+        addExtraStyles();
+        
+        // Debug: log to console
+        console.log('IG Last Post Tracker loaded - scroll down and click the badge');
     }
 
     if (document.readyState === 'loading') {
