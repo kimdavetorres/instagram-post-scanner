@@ -78,4 +78,14 @@ The extension works by:
 
 > **Note:** Posts open briefly to read the exact date, then close automatically. This is the only reliable way to get accurate dates, as Instagram hides exact timestamps on the grid view.
 
-
+### 📁 Project Structure
+```bash
+instagram-post-scanner/
+├── manifest.json          # Extension configuration (Manifest V3)
+├── content.js             # Main scanning logic
+├── content.css            # Styles for badge and panel
+├── icons/                 # Extension icons
+│   ├── icon16.png
+│   ├── icon48.png
+│   └── icon128.png
+└── README.md              # This file
