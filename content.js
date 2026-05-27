@@ -75,13 +75,31 @@
             updateScanProgress(postIndex, totalPostsToScan);
             postLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
             await new Promise(r => setTimeout(r, 400));
+            
             const postUrl = postLink.href;
             const postId = postUrl.split('/p/')[1]?.replace('/', '') || postUrl.split('/reel/')[1]?.replace('/', '');
             let previewImg = null;
             const imgElement = postLink.querySelector('img');
             if (imgElement && imgElement.src && !imgElement.src.includes('blob:')) previewImg = imgElement.src;
-            postLink.click();
+            
+            // Simulate a proper left-click (prevents opening in new tab)
+            const clickEvent = new MouseEvent('click', {
+                view: window,
+                bubbles: true,
+                cancelable: true,
+                button: 0,
+                buttons: 1,
+                ctrlKey: false,
+                altKey: false,
+                shiftKey: false,
+                metaKey: false
+            });
+            const defaultPrevented = !postLink.dispatchEvent(clickEvent);
+            if (!defaultPrevented) {
+                postLink.click();
+            }
             await new Promise(r => setTimeout(r, 800));
+            
             const modal = await waitForElement('div[role="dialog"], article[role="presentation"]', 6000);
             let postDate = null;
             if (modal) {
@@ -90,6 +108,7 @@
             } else {
                 await forceCloseModal();
             }
+            
             if (postDate && !isNaN(postDate.getTime())) {
                 return { url: postUrl, id: postId, date: postDate, preview: previewImg, index: postIndex };
             }
@@ -101,21 +120,18 @@
         }
     }
 
-    // ---------- NEW: Sort posts by visual position (top-left first) ----------
+    // Sort posts by visual grid position (top-left first)
     function sortPostsByGridPosition(postLinks) {
         return postLinks.sort((a, b) => {
             const rectA = a.getBoundingClientRect();
             const rectB = b.getBoundingClientRect();
-            // First by vertical position (top), then by horizontal (left)
             if (Math.abs(rectA.top - rectB.top) < 50) {
-                // Same row: sort by left
                 return rectA.left - rectB.left;
             }
             return rectA.top - rectB.top;
         });
     }
 
-    // ---------- Load all posts (scroll) and return sorted by grid position ----------
     async function loadAndSortPosts() {
         const possibleContainers = [
             document.querySelector('main'),
@@ -139,7 +155,7 @@
             
             const currentLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
             const currentCount = currentLinks.length;
-            console.log(`Scrolled: found ${currentCount} posts so far`);
+            console.log(`Scrolled: found ${currentCount} posts`);
             
             if (currentCount === lastCount) {
                 noChangeCount++;
@@ -153,13 +169,8 @@
         }
         
         let allLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
-        console.log(`Total posts loaded: ${allLinks.length}`);
-        // Limit to desired number
         allLinks = allLinks.slice(0, totalPostsToScan);
-        // Sort by visual grid position
-        const sortedLinks = sortPostsByGridPosition(allLinks);
-        console.log(`Sorted ${sortedLinks.length} posts by grid order (top-left first)`);
-        return sortedLinks;
+        return sortPostsByGridPosition(allLinks);
     }
 
     async function getAllPostsWithExactDates() {
@@ -169,7 +180,7 @@
         const results = [];
         for (let i = 0; i < postsToProcess.length; i++) {
             if (stopScanning) break;
-            const delay = 400 + Math.random() * 500;
+            const delay = 500 + Math.random() * 500; // increased delay
             const result = await getExactPostDate(postsToProcess[i], i + 1);
             if (result) results.push(result);
             await new Promise(r => setTimeout(r, delay));
@@ -178,7 +189,7 @@
         return results;
     }
 
-    // ========== UI (same as before, but with clearer messages) ==========
+    // ========== UI Functions ==========
     function createPanel() {
         if (panelElement) return;
         panelElement = document.createElement('div');
@@ -197,7 +208,7 @@
                     <div id="progressText" class="progress-text">0 / ${totalPostsToScan}</div>
                 </div>
             </div>
-            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – will scan posts from top‑left to bottom‑right.<br><small>If less than 30 appear, Instagram may require login or the profile has fewer visible posts.</small></div></div>
+            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – will scan from top‑left post downwards.<br><small>No new tabs will open; posts close automatically.</small></div></div>
         `;
         document.body.appendChild(panelElement);
         panelElement.querySelector('.panel-close').onclick = () => panelElement.classList.remove('visible');
@@ -233,7 +244,7 @@
     function updatePanelWithResults(results, loadedCount) {
         const contentDiv = panelElement.querySelector('.panel-content');
         if (results.length === 0) {
-            contentDiv.innerHTML = `<div class="empty-panel">❌ No posts found.<br><small>Make sure the profile is public and you are logged in (if needed).</small></div>`;
+            contentDiv.innerHTML = `<div class="empty-panel">❌ No posts found.<br><small>Make sure the profile is public and you are logged in.</small></div>`;
             return;
         }
         let html = `<div class="results-header">📊 Last ${results.length} posts (newest first) — loaded ${loadedCount} total from grid</div>`;
@@ -290,7 +301,7 @@
         if (clearBtn) clearBtn.disabled = true;
         
         const contentDiv = panelElement.querySelector('.panel-content');
-        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts (scrolling) and sorting by grid position...<br><small>This may take 10-20 seconds.</small></div>';
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts (scrolling) and sorting by grid position...<br><small>No new tabs will open.</small></div>';
         
         badgeElement.innerHTML = '🔍 0/30';
         badgeElement.classList.add('scanning');
@@ -306,7 +317,7 @@
         const results = [];
         for (let i = 0; i < postsToProcess.length; i++) {
             if (stopScanning) break;
-            const delay = 400 + Math.random() * 500;
+            const delay = 500 + Math.random() * 600;
             const result = await getExactPostDate(postsToProcess[i], i + 1);
             if (result) results.push(result);
             await new Promise(r => setTimeout(r, delay));
@@ -329,7 +340,6 @@
         isScanning = false;
     }
 
-    // Stop, clear, badge, draggable, styles, init (same as before – keeping it short)
     function stopScan() {
         if (!isScanning) return;
         stopScanning = true;
@@ -508,7 +518,7 @@
         createBadge();
         addStyles();
         createPanel();
-        console.log('✅ Instagram Post Scanner — will scan from top‑left post downwards.');
+        console.log('✅ Instagram Post Scanner — scanning from top-left, no new tabs.');
     }
 
     if (document.readyState === 'loading') {
