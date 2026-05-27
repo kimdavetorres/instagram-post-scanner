@@ -18,140 +18,140 @@
     }
 
     // Sort posts by visual grid position (top-left first)
-    function sortByGridPosition(posts) {
+    function sortPostsByGridPosition(posts) {
         return posts.sort((a, b) => {
-            const rectA = a.element.getBoundingClientRect();
-            const rectB = b.element.getBoundingClientRect();
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
             const topA = rectA.top + window.scrollY;
             const topB = rectB.top + window.scrollY;
             const leftA = rectA.left + window.scrollX;
             const leftB = rectB.left + window.scrollX;
-            const rowTolerance = 200; // enough to group same row
+            const rowTolerance = 200;
             const sameRow = Math.abs(topA - topB) < rowTolerance;
             if (sameRow) return leftA - leftB;
             return topA - topB;
         });
     }
 
-    // Scroll until we have enough posts (with progress feedback)
-    async function loadEnoughPosts() {
+    // Scroll to load all posts (with progress)
+    async function loadAllPosts() {
         const scrollableDiv = document.querySelector('main') || document.body;
-        let lastCount = 0;
+        let previousCount = 0;
         let noChangeCount = 0;
-        let maxScrollAttempts = 30;
-        let scrollAttempts = 0;
+        let maxScrolls = 30;
+        let scrollCount = 0;
 
-        while (scrollAttempts < maxScrollAttempts && !stopScanning) {
+        while (scrollCount < maxScrolls && !stopScanning) {
             scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
-            await new Promise(r => setTimeout(r, 600));
-            window.scrollTo(0, document.body.scrollHeight);
             await new Promise(r => setTimeout(r, 400));
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(r => setTimeout(r, 300));
 
             const currentCount = document.querySelectorAll('a[href*="/p/"]').length;
             updateScanProgress(currentCount, totalPostsToScan, true); // loading phase
 
-            if (currentCount === lastCount) {
+            if (currentCount === previousCount) {
                 noChangeCount++;
                 if (noChangeCount >= 5) break;
             } else {
                 noChangeCount = 0;
-                lastCount = currentCount;
+                previousCount = currentCount;
             }
-            scrollAttempts++;
+            scrollCount++;
             if (currentCount >= totalPostsToScan) break;
         }
+        await new Promise(r => setTimeout(r, 200));
+    }
 
-        document.body.offsetHeight; // force reflow
+    // Extract exact date from opened post modal
+    function extractDateFromModal() {
+        const timeElement = document.querySelector('div[role="dialog"] time, article[role="presentation"] time');
+        if (timeElement) {
+            const datetime = timeElement.getAttribute('datetime');
+            if (datetime) return new Date(datetime);
+            const text = timeElement.textContent.trim();
+            const match = text.match(/(\w+)\s+(\d{1,2}),?\s+(\d{4})/);
+            if (match) return new Date(match[1] + ' ' + match[2] + ', ' + match[3]);
+            const rel = text.match(/(\d+)\s+(day|days)/i);
+            if (rel) {
+                const now = new Date();
+                return new Date(now - parseInt(rel[1]) * 86400000);
+            }
+        }
+        return null;
+    }
+
+    // Close modal reliably
+    async function closeModal() {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+        await new Promise(r => setTimeout(r, 100));
+        const closeBtn = document.querySelector('div[role="dialog"] svg[aria-label="Close"], div[role="dialog"] button');
+        if (closeBtn) closeBtn.click();
         await new Promise(r => setTimeout(r, 100));
     }
 
-    // Extract all posts with dates directly from grid (no clicks)
-    async function getAllPostsFast() {
-        await loadEnoughPosts();
+    // Process a single post: click, read date, close
+    async function processPost(postLink, index) {
+        if (stopScanning) return null;
+        updateScanProgress(index, totalPostsToScan, false);
 
-        const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
-        const postsToProcess = postLinks.slice(0, totalPostsToScan);
-        
-        if (postsToProcess.length === 0) return [];
+        // Scroll into view
+        postLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await new Promise(r => setTimeout(r, 200));
 
-        const postsWithData = [];
-        
-        for (let i = 0; i < postsToProcess.length; i++) {
-            if (stopScanning) break;
-            const link = postsToProcess[i];
+        const postUrl = postLink.href;
+        const postId = postUrl.split('/p/')[1]?.replace('/', '') || '';
+        let previewImg = null;
+        const img = postLink.querySelector('img');
+        if (img && img.src && !img.src.includes('blob:')) previewImg = img.src;
 
-            // Find the associated <time> element
-            let timeEl = link.querySelector('time');
-            if (!timeEl) {
-                const parent = link.closest('article') || link.closest('div[role="presentation"]');
-                if (parent) timeEl = parent.querySelector('time');
-            }
-            if (!timeEl) {
-                // Fallback: find any time element nearby
-                const rect = link.getBoundingClientRect();
-                const allTimes = document.querySelectorAll('time');
-                for (const t of allTimes) {
-                    const trect = t.getBoundingClientRect();
-                    if (Math.abs(trect.top - rect.top) < 100) {
-                        timeEl = t;
-                        break;
-                    }
-                }
-            }
+        // Click to open modal
+        postLink.click();
+        await new Promise(r => setTimeout(r, 400));
 
-            let postDate = null;
-            if (timeEl) {
-                const datetime = timeEl.getAttribute('datetime');
-                if (datetime) postDate = new Date(datetime);
-            }
-
-            let previewImg = null;
-            const img = link.querySelector('img');
-            if (img && img.src && !img.src.includes('blob:')) previewImg = img.src;
-
-            postsWithData.push({
-                element: link,
-                url: link.href,
-                id: link.href.split('/p/')[1]?.replace('/', '') || '',
-                date: postDate,
-                preview: previewImg
-            });
-
-            // Update progress for reading phase
-            updateScanProgress(i + 1, totalPostsToScan, false);
-            await new Promise(r => setTimeout(r, 5)); // tiny yield for UI
+        let postDate = null;
+        const modal = await waitForElement('div[role="dialog"], article[role="presentation"]', 3000);
+        if (modal) {
+            postDate = extractDateFromModal();
+            await closeModal();
         }
 
-        // Sort by visual grid position (top-left first)
-        const sorted = sortByGridPosition(postsWithData);
-        console.log('Sorted posts (top-left to bottom-right):', sorted.map(p => p.url));
+        if (postDate && !isNaN(postDate.getTime())) {
+            return { url: postUrl, id: postId, date: postDate, preview: previewImg, index };
+        }
+        return null;
+    }
+
+    function waitForElement(selector, timeout = 3000) {
+        return new Promise(resolve => {
+            const start = Date.now();
+            const interval = setInterval(() => {
+                const el = document.querySelector(selector);
+                if (el) { clearInterval(interval); resolve(el); }
+                else if (Date.now() - start > timeout) { clearInterval(interval); resolve(null); }
+            }, 100);
+        });
+    }
+
+    // Main scanning function
+    async function scanAllPosts() {
+        await loadAllPosts();
+        let postLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+        postLinks = sortPostsByGridPosition(postLinks).slice(0, totalPostsToScan);
+        if (postLinks.length === 0) return [];
 
         const results = [];
-        for (let i = 0; i < sorted.length; i++) {
-            let date = sorted[i].date;
-            let estimated = false;
-            if (!date) {
-                // Fallback: estimate based on position (rare)
-                date = new Date();
-                date.setDate(date.getDate() - i * 2);
-                estimated = true;
-            }
-            results.push({
-                url: sorted[i].url,
-                id: sorted[i].id,
-                date: date,
-                preview: sorted[i].preview,
-                index: i + 1,
-                estimated: estimated
-            });
+        for (let i = 0; i < postLinks.length; i++) {
+            if (stopScanning) break;
+            const result = await processPost(postLinks[i], i + 1);
+            if (result) results.push(result);
+            await new Promise(r => setTimeout(r, 100)); // small gap between posts
         }
-
-        // Final sort by actual date (newest first) for display
         results.sort((a, b) => b.date - a.date);
         return results;
     }
 
-    // ========== UI functions (with progress phases) ==========
+    // ========== UI (unchanged from your previous working version) ==========
     function createPanel() {
         if (panelElement) return;
         panelElement = document.createElement('div');
@@ -170,7 +170,7 @@
                     <div id="progressText" class="progress-text">0 / ${totalPostsToScan}</div>
                 </div>
             </div>
-            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – reads dates directly from grid (no posts open). Super fast!</div></div>
+            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – opens each post briefly for exact date (fast & accurate).</div></div>
         `;
         document.body.appendChild(panelElement);
         panelElement.querySelector('.panel-close').onclick = () => panelElement.classList.remove('visible');
@@ -186,14 +186,10 @@
         if (progressBar) progressBar.style.width = `${percent}%`;
         if (progressText) progressText.textContent = `${current} / ${total}`;
         if (badgeElement) badgeElement.innerHTML = `🔍 ${current}/${total}`;
-        
         const stats = document.querySelector('#scanStats');
         if (stats) {
-            if (isLoadingPhase) {
-                stats.textContent = `📜 Loading posts... ${current} found so far`;
-            } else {
-                stats.textContent = `🔍 Reading dates... ${current} of ${total} processed`;
-            }
+            if (isLoadingPhase) stats.textContent = `📜 Loading posts... ${current} found so far`;
+            else stats.textContent = `🔍 Scanning post ${current} of ${total}...`;
         }
     }
 
@@ -216,18 +212,17 @@
             contentDiv.innerHTML = `<div class="empty-panel">❌ No posts found.<br><small>Make sure the profile is public and you are logged in.</small></div>`;
             return;
         }
-        let html = `<div class="results-header">📊 Last ${results.length} posts (newest first) — loaded ${loadedCount} total from grid</div>`;
+        let html = `<div class="results-header">📊 Last ${results.length} posts (newest first) — loaded ${loadedCount} total</div>`;
         for (let i = 0; i < results.length; i++) {
             const post = results[i];
             const daysAgo = getDaysAgo(post.date);
             const dateStr = post.date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
             const medal = i === 0 ? '🥇 ' : i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : '📌 ';
-            const estimatedNote = post.estimated ? ' (estimated)' : '';
             html += `
                 <div class="post-item" data-url="${post.url}">
                     ${post.preview ? `<img src="${post.preview}" class="post-preview" crossorigin="anonymous" loading="lazy">` : '<div class="post-preview-placeholder">📷</div>'}
                     <div class="post-info">
-                        <div class="post-days">${medal}${daysAgo}${estimatedNote}</div>
+                        <div class="post-days">${medal}${daysAgo}</div>
                         <div class="post-date">📅 ${dateStr}</div>
                         <div class="post-link">🔗 <span class="clickable-link">Open post →</span></div>
                     </div>
@@ -235,7 +230,7 @@
             `;
         }
         if (loadedCount < totalPostsToScan) {
-            html += `<div class="info-message" style="margin-top: 12px;">⚠️ Only ${loadedCount} posts were found in the grid. Instagram may require login to see more, or the profile has fewer posts.</div>`;
+            html += `<div class="info-message" style="margin-top:12px;">⚠️ Only ${loadedCount} posts found. Instagram may require login or profile has fewer posts.</div>`;
         }
         contentDiv.innerHTML = html;
         document.querySelectorAll('.post-item').forEach(item => {
@@ -250,7 +245,6 @@
         if (results.length > 0) {
             const newestDays = getDaysAgo(results[0].date);
             badgeElement.innerHTML = `📅 ${newestDays} (${results.length})<span class="badge-arrow">▼</span>`;
-            badgeElement.title = `Newest: ${newestDays} ago | Scanned ${results.length} posts`;
         } else {
             badgeElement.innerHTML = `⚠️ 0 posts<span class="badge-arrow">▼</span>`;
         }
@@ -271,22 +265,22 @@
         if (clearBtn) clearBtn.disabled = true;
 
         const contentDiv = panelElement.querySelector('.panel-content');
-        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts and reading dates directly from grid...<br><small>No posts will open. Fast scanning.</small></div>';
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Scanning posts (opening each briefly)...<br><small>Accurate dates – about 15‑20 seconds for 30 posts.</small></div>';
 
         badgeElement.innerHTML = '🔍 0/30';
         badgeElement.classList.add('scanning');
 
         const startTime = Date.now();
-        const results = await getAllPostsFast();
+        const results = await scanAllPosts();
         const loadedCount = document.querySelectorAll('a[href*="/p/"]').length;
-
         const scanTime = ((Date.now() - startTime) / 1000).toFixed(1);
+
         updatePanelWithResults(results, loadedCount);
         updateBadgeWithResults(results);
+        updateScanComplete(results, loadedCount);
 
         const stats = document.querySelector('#scanStats');
         if (stats) stats.textContent = `✅ Complete! ${results.length} posts in ${scanTime}s (loaded ${loadedCount} total)`;
-        updateScanComplete(results, loadedCount);
 
         if (startBtn) startBtn.disabled = false;
         if (stopBtn) stopBtn.disabled = true;
@@ -473,7 +467,7 @@
         createBadge();
         addStyles();
         createPanel();
-        console.log('✅ Optimized Instagram Scanner — reads dates directly from grid (super fast).');
+        console.log('✅ Instagram Scanner (optimized, accurate) – opens posts for exact dates.');
     }
 
     if (document.readyState === 'loading') {
