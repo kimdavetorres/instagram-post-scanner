@@ -1,0 +1,18 @@
+#ig-last-post-badge {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 999999;
+
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+
+  padding: 10px 12px;
+  border-radius: 10px;
+
+  font-size: 13px;
+  font-family: Arial, sans-serif;
+
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+}
