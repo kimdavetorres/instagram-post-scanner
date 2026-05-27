@@ -89,3 +89,21 @@ instagram-post-scanner/
 │   ├── icon48.png
 │   └── icon128.png
 └── README.md              # This file
+```
+
+### 🔧 Configuration
+
+You can adjust the number of posts to scan by changing the totalPostsToScan variable in content.js:
+
+```bash
+javascript
+
+let totalPostsToScan = 30;  // Change to 10, 20, 50, etc.
+```
+
+### 🛡️ Permissions Explained
+**Permission**	                           **Why it's needed**
+`host_permissions: *.instagram.com/*`	      To run on Instagram profiles
+`content_scripts`	                        To inject the scanner into the page
+
+**No unnecessary permissions** — no tracking, no data collection, no external APIs.
