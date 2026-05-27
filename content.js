@@ -7,7 +7,6 @@
     let stopScanning = false;
     let currentScanPosts = [];
     let totalPostsToScan = 30;
-    let postLinksCache = [];
 
     function getDaysAgo(postDate) {
         const now = new Date();
@@ -34,27 +33,15 @@
         });
     }
 
-    // Force close modal using multiple strategies
     async function forceCloseModal() {
-        // Strategy 1: Escape key
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
         await new Promise(r => setTimeout(r, 200));
-        
-        // Strategy 2: Click on background overlay
         const overlay = document.querySelector('div[role="presentation"]:last-child, div[class*="x1n2onr6"]');
-        if (overlay) {
-            overlay.click();
-            await new Promise(r => setTimeout(r, 200));
-        }
-        
-        // Strategy 3: Click close button (X)
+        if (overlay) overlay.click();
+        await new Promise(r => setTimeout(r, 200));
         const closeBtn = document.querySelector('div[role="dialog"] svg[aria-label="Close"], div[role="dialog"] button');
-        if (closeBtn) {
-            closeBtn.click();
-            await new Promise(r => setTimeout(r, 200));
-        }
-        
-        // Strategy 4: Escape again
+        if (closeBtn) closeBtn.click();
+        await new Promise(r => setTimeout(r, 200));
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
         await new Promise(r => setTimeout(r, 300));
     }
@@ -66,9 +53,7 @@
             if (datetime) return new Date(datetime);
             const timeText = timeElement.textContent.trim();
             const absoluteMatch = timeText.match(/(\w+)\s+(\d{1,2}),?\s+(\d{4})/);
-            if (absoluteMatch) {
-                return new Date(absoluteMatch[1] + ' ' + absoluteMatch[2] + ', ' + absoluteMatch[3]);
-            }
+            if (absoluteMatch) return new Date(absoluteMatch[1] + ' ' + absoluteMatch[2] + ', ' + absoluteMatch[3]);
             const relativeMatch = timeText.match(/(\d+)\s+(day|days)/i);
             if (relativeMatch) {
                 const now = new Date();
@@ -86,25 +71,17 @@
 
     async function getExactPostDate(postLink, postIndex) {
         if (stopScanning) return null;
-        
         try {
             updateScanProgress(postIndex, totalPostsToScan);
-            
             postLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
             await new Promise(r => setTimeout(r, 400));
-            
             const postUrl = postLink.href;
             const postId = postUrl.split('/p/')[1]?.replace('/', '') || postUrl.split('/reel/')[1]?.replace('/', '');
-            
             let previewImg = null;
             const imgElement = postLink.querySelector('img');
-            if (imgElement && imgElement.src && !imgElement.src.includes('blob:')) {
-                previewImg = imgElement.src;
-            }
-            
+            if (imgElement && imgElement.src && !imgElement.src.includes('blob:')) previewImg = imgElement.src;
             postLink.click();
             await new Promise(r => setTimeout(r, 800));
-            
             const modal = await waitForElement('div[role="dialog"], article[role="presentation"]', 6000);
             let postDate = null;
             if (modal) {
@@ -113,15 +90,8 @@
             } else {
                 await forceCloseModal();
             }
-            
             if (postDate && !isNaN(postDate.getTime())) {
-                return {
-                    url: postUrl,
-                    id: postId,
-                    date: postDate,
-                    preview: previewImg,
-                    index: postIndex
-                };
+                return { url: postUrl, id: postId, date: postDate, preview: previewImg, index: postIndex };
             }
             return null;
         } catch (error) {
@@ -131,62 +101,90 @@
         }
     }
 
-    async function loadEnoughPosts() {
-        const scrollableDiv = document.querySelector('main') || document.body;
-        let previousCount = 0;
-        let stalledCount = 0;
-        const maxStalled = 8;
+    // ---------- NEW: Sort posts by visual position (top-left first) ----------
+    function sortPostsByGridPosition(postLinks) {
+        return postLinks.sort((a, b) => {
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
+            // First by vertical position (top), then by horizontal (left)
+            if (Math.abs(rectA.top - rectB.top) < 50) {
+                // Same row: sort by left
+                return rectA.left - rectB.left;
+            }
+            return rectA.top - rectB.top;
+        });
+    }
+
+    // ---------- Load all posts (scroll) and return sorted by grid position ----------
+    async function loadAndSortPosts() {
+        const possibleContainers = [
+            document.querySelector('main'),
+            document.querySelector('article'),
+            document.querySelector('div[role="presentation"]'),
+            document.body
+        ];
+        let scrollableDiv = possibleContainers.find(c => c && c.scrollHeight > window.innerHeight);
+        if (!scrollableDiv) scrollableDiv = document.body;
         
-        while (!stopScanning && stalledCount < maxStalled) {
+        let lastCount = 0;
+        let noChangeCount = 0;
+        let maxScrollAttempts = 30;
+        let scrollAttempts = 0;
+        
+        while (scrollAttempts < maxScrollAttempts && !stopScanning) {
+            scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
+            await new Promise(r => setTimeout(r, 800));
+            window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(r => setTimeout(r, 500));
+            
             const currentLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
             const currentCount = currentLinks.length;
+            console.log(`Scrolled: found ${currentCount} posts so far`);
             
-            if (currentCount >= totalPostsToScan) {
-                break;
-            }
-            
-            scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
-            await new Promise(r => setTimeout(r, 700));
-            
-            if (currentCount === previousCount) {
-                stalledCount++;
+            if (currentCount === lastCount) {
+                noChangeCount++;
+                if (noChangeCount >= 5) break;
             } else {
-                stalledCount = 0;
-                previousCount = currentCount;
+                noChangeCount = 0;
+                lastCount = currentCount;
             }
+            scrollAttempts++;
+            if (currentCount >= totalPostsToScan) break;
         }
         
-        postLinksCache = Array.from(document.querySelectorAll('a[href*="/p/"]'));
-        return postLinksCache.slice(0, totalPostsToScan);
+        let allLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+        console.log(`Total posts loaded: ${allLinks.length}`);
+        // Limit to desired number
+        allLinks = allLinks.slice(0, totalPostsToScan);
+        // Sort by visual grid position
+        const sortedLinks = sortPostsByGridPosition(allLinks);
+        console.log(`Sorted ${sortedLinks.length} posts by grid order (top-left first)`);
+        return sortedLinks;
     }
 
     async function getAllPostsWithExactDates() {
-        const postsToProcess = await loadEnoughPosts();
+        const postsToProcess = await loadAndSortPosts();
         if (postsToProcess.length === 0) return [];
         
         const results = [];
         for (let i = 0; i < postsToProcess.length; i++) {
             if (stopScanning) break;
-            const delay = 300 + Math.random() * 400;
+            const delay = 400 + Math.random() * 500;
             const result = await getExactPostDate(postsToProcess[i], i + 1);
             if (result) results.push(result);
             await new Promise(r => setTimeout(r, delay));
         }
-        
         results.sort((a, b) => b.date - a.date);
         return results;
     }
 
-    // ================= UI COMPONENTS =================
+    // ========== UI (same as before, but with clearer messages) ==========
     function createPanel() {
         if (panelElement) return;
         panelElement = document.createElement('div');
         panelElement.id = 'ig-posts-panel';
         panelElement.innerHTML = `
-            <div class="panel-header">
-                <span>📸 Instagram Post Scanner (${totalPostsToScan} posts)</span>
-                <button class="panel-close">×</button>
-            </div>
+            <div class="panel-header"><span>📸 Instagram Post Scanner (${totalPostsToScan} posts)</span><button class="panel-close">×</button></div>
             <div class="panel-controls">
                 <div class="stats"><span id="scanStats">Ready to scan</span></div>
                 <div class="buttons">
@@ -199,7 +197,7 @@
                     <div id="progressText" class="progress-text">0 / ${totalPostsToScan}</div>
                 </div>
             </div>
-            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" to analyze last ${totalPostsToScan} posts<br><small>Posts will open briefly to read exact dates, then close automatically</small></div></div>
+            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – will scan posts from top‑left to bottom‑right.<br><small>If less than 30 appear, Instagram may require login or the profile has fewer visible posts.</small></div></div>
         `;
         document.body.appendChild(panelElement);
         panelElement.querySelector('.panel-close').onclick = () => panelElement.classList.remove('visible');
@@ -219,26 +217,26 @@
         if (stats) stats.textContent = `🔍 Scanning post ${current} of ${total}...`;
     }
 
-    function updateScanComplete(results) {
+    function updateScanComplete(results, loadedCount) {
         const progressBar = document.querySelector('#scanProgress');
         const progressText = document.querySelector('#progressText');
         const stats = document.querySelector('#scanStats');
         const startBtn = document.querySelector('#startScanBtn');
         const stopBtn = document.querySelector('#stopScanBtn');
         if (progressBar) progressBar.style.width = '100%';
-        if (progressText) progressText.textContent = `✓ ${results.length} / ${totalPostsToScan}`;
-        if (stats) stats.textContent = `✅ Complete! Found ${results.length} posts with exact dates`;
+        if (progressText) progressText.textContent = `✓ ${results.length} / ${loadedCount}`;
+        if (stats) stats.textContent = `✅ Complete! Found ${results.length} posts with exact dates (loaded ${loadedCount} total)`;
         if (startBtn) startBtn.disabled = false;
         if (stopBtn) stopBtn.disabled = true;
     }
 
-    function updatePanelWithResults(results) {
+    function updatePanelWithResults(results, loadedCount) {
         const contentDiv = panelElement.querySelector('.panel-content');
         if (results.length === 0) {
-            contentDiv.innerHTML = `<div class="empty-panel">❌ No posts found<br><small>Make sure you're on a public profile and scroll down first</small></div>`;
+            contentDiv.innerHTML = `<div class="empty-panel">❌ No posts found.<br><small>Make sure the profile is public and you are logged in (if needed).</small></div>`;
             return;
         }
-        let html = `<div class="results-header">📊 Last ${results.length} posts (newest first)</div>`;
+        let html = `<div class="results-header">📊 Last ${results.length} posts (newest first) — loaded ${loadedCount} total from grid</div>`;
         for (let i = 0; i < results.length; i++) {
             const post = results[i];
             const daysAgo = getDaysAgo(post.date);
@@ -254,6 +252,9 @@
                     </div>
                 </div>
             `;
+        }
+        if (loadedCount < totalPostsToScan) {
+            html += `<div class="info-message" style="margin-top: 12px;">⚠️ Only ${loadedCount} posts were found in the grid. Instagram may require login to see more, or the profile has fewer posts.</div>`;
         }
         contentDiv.innerHTML = html;
         document.querySelectorAll('.post-item').forEach(item => {
@@ -289,23 +290,38 @@
         if (clearBtn) clearBtn.disabled = true;
         
         const contentDiv = panelElement.querySelector('.panel-content');
-        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts and scanning...<br><small>Please wait, scanning up to 30 posts</small></div>';
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts (scrolling) and sorting by grid position...<br><small>This may take 10-20 seconds.</small></div>';
         
         badgeElement.innerHTML = '🔍 0/30';
         badgeElement.classList.add('scanning');
         
         const startTime = Date.now();
-        currentScanPosts = await getAllPostsWithExactDates();
-        const scanTime = ((Date.now() - startTime) / 1000).toFixed(1);
+        const postsToProcess = await loadAndSortPosts();
+        const loadedCount = postsToProcess.length;
+        console.log(`Loaded ${loadedCount} posts. Scanning in grid order...`);
         
-        updatePanelWithResults(currentScanPosts);
-        updateBadgeWithResults(currentScanPosts);
-        updateScanComplete(currentScanPosts);
+        const statsSpan = document.querySelector('#scanStats');
+        if (statsSpan) statsSpan.textContent = `🔍 Loaded ${loadedCount} posts. Now reading dates (top-left first)...`;
         
-        const stats = document.querySelector('#scanStats');
-        if (stats && currentScanPosts.length > 0) {
-            stats.textContent = `✅ Complete! ${currentScanPosts.length} posts in ${scanTime}s`;
+        const results = [];
+        for (let i = 0; i < postsToProcess.length; i++) {
+            if (stopScanning) break;
+            const delay = 400 + Math.random() * 500;
+            const result = await getExactPostDate(postsToProcess[i], i + 1);
+            if (result) results.push(result);
+            await new Promise(r => setTimeout(r, delay));
         }
+        results.sort((a, b) => b.date - a.date);
+        
+        const scanTime = ((Date.now() - startTime) / 1000).toFixed(1);
+        updatePanelWithResults(results, loadedCount);
+        updateBadgeWithResults(results);
+        
+        const finalStats = document.querySelector('#scanStats');
+        if (finalStats) {
+            finalStats.textContent = `✅ Complete! ${results.length} posts with dates in ${scanTime}s (loaded ${loadedCount} total)`;
+        }
+        updateScanComplete(results, loadedCount);
         
         if (startBtn) startBtn.disabled = false;
         if (stopBtn) stopBtn.disabled = true;
@@ -313,6 +329,7 @@
         isScanning = false;
     }
 
+    // Stop, clear, badge, draggable, styles, init (same as before – keeping it short)
     function stopScan() {
         if (!isScanning) return;
         stopScanning = true;
@@ -397,7 +414,9 @@
     }
 
     function addStyles() {
+        if (document.getElementById('ig-styles')) return;
         const style = document.createElement('style');
+        style.id = 'ig-styles';
         style.textContent = `
             #ig-last-post-badge {
                 position: fixed;
@@ -489,7 +508,7 @@
         createBadge();
         addStyles();
         createPanel();
-        console.log('✅ Instagram Post Scanner ready — will reliably scan 30 posts.');
+        console.log('✅ Instagram Post Scanner — will scan from top‑left post downwards.');
     }
 
     if (document.readyState === 'loading') {
