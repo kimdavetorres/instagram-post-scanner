@@ -1,20 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "Instagram Last Post Tracker",
+  "name": "IG Last Post Tracker",
   "version": "1.0.0",
-  "description": "Shows how many days since the latest Instagram post.",
+  "description": "Shows how many days since the most recent Instagram post",
   "permissions": [],
   "host_permissions": ["https://www.instagram.com/*"],
   "content_scripts": [
     {
-      "matches": ["https://www.instagram.com/*"],
-      "js": [
-        "content/dom.js",
-        "content/time.js",
-        "content/ui.js",
-        "content/content.js"
-      ],
-      "css": ["styles.css"]
+      "matches": ["https://www.instagram.com/*/"],
+      "exclude_matches": ["https://www.instagram.com/explore/*", "https://www.instagram.com/direct/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }
