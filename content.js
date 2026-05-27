@@ -68,6 +68,9 @@
         return null;
     }
 
+    // Extract date and post info WITHOUT opening in new tab
+    // This just reads the modal after clicking (necessary to get date)
+    // But does NOT open any external links
     async function getPostDateFromClick(postLink, postIndex) {
         return new Promise(async (resolve) => {
             if (stopScanning) {
@@ -86,6 +89,7 @@
                 const postId = postUrl.split('/p/')[1]?.replace('/', '') || 
                                postUrl.split('/reel/')[1]?.replace('/', '');
                 
+                // Click to open modal (required to get date)
                 postLink.click();
                 await new Promise(r => setTimeout(r, 500));
                 
@@ -111,6 +115,7 @@
                     previewImg = imgElement.src;
                 }
                 
+                // Close modal (Escape key) - does NOT open new tab
                 document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27 }));
                 await new Promise(r => setTimeout(r, 200));
                 
@@ -133,7 +138,7 @@
         const scrollableDiv = document.querySelector('main') || document.body;
         let previousCount = 0;
         let attempts = 0;
-        const maxAttempts = 40; // Scroll up to 40 times to load ~30 posts
+        const maxAttempts = 40;
         
         while (attempts < maxAttempts && !stopScanning) {
             scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
@@ -148,7 +153,6 @@
                 previousCount = currentCount;
             }
             
-            // Stop if we have enough posts
             if (currentCount >= totalPostsToScan) {
                 break;
             }
@@ -156,7 +160,6 @@
     }
 
     async function getLast30Posts() {
-        // Load all posts by scrolling
         await loadAllPosts();
         
         const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
@@ -178,7 +181,6 @@
             await new Promise(r => setTimeout(r, 300));
         }
         
-        // Sort by date (newest first)
         results.sort((a, b) => b.date - a.date);
         return results;
     }
@@ -190,7 +192,7 @@
         panelElement.id = 'ig-posts-panel';
         panelElement.innerHTML = `
             <div class="panel-header">
-                <span>📸 Instagram Post Scanner</span>
+                <span>📸 Instagram Post Scanner (${totalPostsToScan} posts)</span>
                 <button class="panel-close">×</button>
             </div>
             <div class="panel-controls">
@@ -207,7 +209,7 @@
                 </div>
             </div>
             <div class="panel-content">
-                <div class="info-message">Click "Start Scan" to analyze last ${totalPostsToScan} posts</div>
+                <div class="info-message">📌 Click "Start Scan" to analyze last ${totalPostsToScan} posts<br><small>Posts will open briefly (to read dates) then close automatically</small></div>
             </div>
         `;
         
@@ -231,7 +233,12 @@
             progressBar.style.width = `${progress}%`;
         }
         if (stats) {
-            stats.textContent = `Scanning: ${current} / ${total} posts`;
+            stats.textContent = `🔍 Scanning: ${current} / ${total} posts`;
+        }
+        
+        // Update badge with progress
+        if (badgeElement) {
+            badgeElement.innerHTML = `🔍 ${current}/${total}`;
         }
     }
     
@@ -256,11 +263,11 @@
             contentDiv.innerHTML = `
                 <div class="empty-panel">
                     ❌ No posts found<br>
-                    <small>Make sure you're on a profile page</small>
+                    <small>Make sure you're on a profile page and try again</small>
                 </div>
             `;
         } else {
-            let html = '<div class="results-header">📊 Last 30 Posts (sorted by date)</div>';
+            let html = `<div class="results-header">📊 Last ${results.length} posts (sorted by date, newest first)</div>`;
             
             for (let i = 0; i < results.length; i++) {
                 const post = results[i];
@@ -269,27 +276,36 @@
                 const medal = i === 0 ? '🥇 ' : i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : '📌 ';
                 
                 html += `
-                    <a href="${post.url}" target="_blank" class="post-item">
+                    <div class="post-item" data-url="${post.url}">
                         ${post.preview ? `<img src="${post.preview}" class="post-preview" crossorigin="anonymous">` : '<div class="post-preview-placeholder">📷</div>'}
                         <div class="post-info">
                             <div class="post-days">${medal}${daysAgo}</div>
                             <div class="post-date">📅 ${dateStr}</div>
-                            <div class="post-link">🔗 Open post →</div>
+                            <div class="post-link">🔗 <span class="clickable-link">Click to open post</span></div>
                         </div>
-                    </a>
+                    </div>
                 `;
             }
             
             contentDiv.innerHTML = html;
+            
+            // Add click handlers to open links ONLY when user clicks
+            document.querySelectorAll('.post-item').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    const url = item.getAttribute('data-url');
+                    if (url) {
+                        window.open(url, '_blank');
+                    }
+                });
+            });
         }
     }
     
     function updateBadgeWithResults(results) {
         if (results.length > 0) {
             const newestDays = getDaysAgo(results[0].date);
-            const oldestDays = getDaysAgo(results[results.length - 1].date);
-            badgeElement.innerHTML = `📅 ${newestDays} ago (${results.length} posts)<span class="badge-arrow">▼</span>`;
-            badgeElement.title = `Newest: ${newestDays} ago | Oldest: ${oldestDays} ago`;
+            badgeElement.innerHTML = `📅 ${newestDays} ago (${results.length})<span class="badge-arrow">▼</span>`;
+            badgeElement.title = `Newest: ${newestDays} ago | Scanned ${results.length} posts`;
         } else {
             badgeElement.innerHTML = `⚠️ No posts<span class="badge-arrow">▼</span>`;
         }
@@ -314,7 +330,7 @@
         if (clearBtn) clearBtn.disabled = true;
         
         const contentDiv = panelElement.querySelector('.panel-content');
-        contentDiv.innerHTML = '<div class="loading-panel">🔍 Scanning posts...<br><small>Opening posts to get exact dates...</small></div>';
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Scanning posts...<br><small>Opening posts briefly to read dates (will close automatically)</small></div>';
         
         badgeElement.innerHTML = '🔍 Scanning...';
         badgeElement.classList.add('scanning');
@@ -638,8 +654,7 @@
                 gap: 12px;
                 padding: 12px 16px;
                 border-bottom: 1px solid #efefef;
-                text-decoration: none;
-                color: #262626;
+                cursor: pointer;
                 transition: background 0.1s;
             }
             
@@ -676,10 +691,11 @@
                 margin-top: 4px;
             }
             
-            .post-link {
+            .clickable-link {
                 font-size: 11px;
-                color: #8e8e8e;
-                margin-top: 4px;
+                color: #0095f6;
+                text-decoration: underline;
+                cursor: pointer;
             }
             
             .loading-panel, .empty-panel, .info-message {
