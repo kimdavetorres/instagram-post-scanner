@@ -109,3 +109,36 @@ let totalPostsToScan = 30;  // Change to 10, 20, 50, etc.
 | `content_scripts`	                     | To inject the scanner into thepage |
 
 **No unnecessary permissions** — no tracking, no data collection, no external APIs.
+
+### 🐛 Known Limitations
+- **Private accounts** — cannot scan (Instagram blocks access)
+- **Rate limiting** — scanning too fast may trigger Instagram's temporary blocks
+- **DOM changes** — Instagram updates frequently; may need selector updates
+
+
+### ❓ Troubleshooting
+**"No posts found" or only few posts scanned**
+- Make sure you're on a **public** Instagram profile
+- **Scroll down** manually first to ensure posts are loaded
+- Try clicking "Start Scan" again
+
+**Posts not closing automatically**
+- Instagram may have changed their modal behavior
+- Reload the page and try again
+
+**Extension stopped working after Instagram update**
+- Instagram frequently changes their HTML structure
+- [Open an issue](https://github.com/kimdavetorres/instagram-post-scanner/issues) and I'll update the selectors
+
+### 📝 License
+MIT License — free for personal and commercial use.
+
+### 🙏 Credits
+Created by [Kim Dave Torres](https://www.upwork.com/freelancers/~01e74d3efd68e1bd1c) — built with pure JavaScript, no external dependencies.
+
+### 🤝 Contributing
+Contributions are welcome!
+
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
