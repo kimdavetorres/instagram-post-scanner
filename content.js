@@ -5,6 +5,9 @@
     let panelElement = null;
     let isScanning = false;
     let scanCompleted = false;
+    let stopScanning = false;
+    let currentScanPosts = [];
+    let totalPostsToScan = 30;
 
     function getDaysAgo(postDate) {
         const now = new Date();
@@ -67,16 +70,24 @@
 
     async function getPostDateFromClick(postLink, postIndex) {
         return new Promise(async (resolve) => {
+            if (stopScanning) {
+                resolve(null);
+                return;
+            }
+            
             try {
+                // Update progress in panel
+                updateScanProgress(postIndex, totalPostsToScan);
+                
                 postLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 200));
                 
                 const postUrl = postLink.href;
                 const postId = postUrl.split('/p/')[1]?.replace('/', '') || 
                                postUrl.split('/reel/')[1]?.replace('/', '');
                 
                 postLink.click();
-                await new Promise(r => setTimeout(r, 600));
+                await new Promise(r => setTimeout(r, 500));
                 
                 const modal = await waitForElement('div[role="dialog"], article[role="presentation"]', 3000);
                 
@@ -101,7 +112,7 @@
                 }
                 
                 document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27 }));
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 200));
                 
                 resolve({
                     url: postUrl,
@@ -118,31 +129,56 @@
         });
     }
 
-    async function getLast3PostsAutomatically() {
-        // Scroll to load posts
+    async function loadAllPosts() {
         const scrollableDiv = document.querySelector('main') || document.body;
-        for (let i = 0; i < 6; i++) {
+        let previousCount = 0;
+        let attempts = 0;
+        const maxAttempts = 40; // Scroll up to 40 times to load ~30 posts
+        
+        while (attempts < maxAttempts && !stopScanning) {
             scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
-            await new Promise(r => setTimeout(r, 600));
+            await new Promise(r => setTimeout(r, 500));
+            
+            const currentCount = document.querySelectorAll('a[href*="/p/"]').length;
+            
+            if (currentCount === previousCount) {
+                attempts++;
+            } else {
+                attempts = 0;
+                previousCount = currentCount;
+            }
+            
+            // Stop if we have enough posts
+            if (currentCount >= totalPostsToScan) {
+                break;
+            }
         }
+    }
+
+    async function getLast30Posts() {
+        // Load all posts by scrolling
+        await loadAllPosts();
         
         const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+        const postsToProcess = postLinks.slice(0, totalPostsToScan);
         
-        if (postLinks.length === 0) {
+        if (postsToProcess.length === 0) {
             return [];
         }
         
-        const topPosts = postLinks.slice(0, 3);
         const results = [];
         
-        for (let i = 0; i < topPosts.length; i++) {
-            const result = await getPostDateFromClick(topPosts[i], i + 1);
+        for (let i = 0; i < postsToProcess.length; i++) {
+            if (stopScanning) break;
+            
+            const result = await getPostDateFromClick(postsToProcess[i], i + 1);
             if (result && result.date) {
                 results.push(result);
             }
-            await new Promise(r => setTimeout(r, 400));
+            await new Promise(r => setTimeout(r, 300));
         }
         
+        // Sort by date (newest first)
         results.sort((a, b) => b.date - a.date);
         return results;
     }
@@ -154,11 +190,24 @@
         panelElement.id = 'ig-posts-panel';
         panelElement.innerHTML = `
             <div class="panel-header">
-                <span>📸 Last 3 Posts</span>
+                <span>📸 Instagram Post Scanner</span>
                 <button class="panel-close">×</button>
             </div>
+            <div class="panel-controls">
+                <div class="stats">
+                    <span id="scanStats">Ready to scan</span>
+                </div>
+                <div class="buttons">
+                    <button id="startScanBtn" class="control-btn start">▶ Start Scan</button>
+                    <button id="stopScanBtn" class="control-btn stop" disabled>⏹ Stop</button>
+                    <button id="clearResultsBtn" class="control-btn clear">🗑 Clear</button>
+                </div>
+                <div class="progress-bar">
+                    <div id="scanProgress" class="progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
             <div class="panel-content">
-                <div class="loading-panel">Loading...</div>
+                <div class="info-message">Click "Start Scan" to analyze last ${totalPostsToScan} posts</div>
             </div>
         `;
         
@@ -167,14 +216,43 @@
         panelElement.querySelector('.panel-close').onclick = () => {
             panelElement.classList.remove('visible');
         };
+        
+        panelElement.querySelector('#startScanBtn').onclick = () => startScan();
+        panelElement.querySelector('#stopScanBtn').onclick = () => stopScan();
+        panelElement.querySelector('#clearResultsBtn').onclick = () => clearResults();
     }
-
-    async function updatePanelWithResults(last3Posts) {
+    
+    function updateScanProgress(current, total) {
+        const progress = (current / total) * 100;
+        const progressBar = document.querySelector('#scanProgress');
+        const stats = document.querySelector('#scanStats');
+        
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`;
+        }
+        if (stats) {
+            stats.textContent = `Scanning: ${current} / ${total} posts`;
+        }
+    }
+    
+    function updateScanComplete(results) {
+        const progressBar = document.querySelector('#scanProgress');
+        const stats = document.querySelector('#scanStats');
+        const startBtn = document.querySelector('#startScanBtn');
+        const stopBtn = document.querySelector('#stopScanBtn');
+        
+        if (progressBar) progressBar.style.width = '100%';
+        if (stats) stats.textContent = `✅ Complete! Found ${results.length} posts with dates`;
+        if (startBtn) startBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+    }
+    
+    function updatePanelWithResults(results) {
         if (!panelElement) createPanel();
         
         const contentDiv = panelElement.querySelector('.panel-content');
         
-        if (last3Posts.length === 0) {
+        if (results.length === 0) {
             contentDiv.innerHTML = `
                 <div class="empty-panel">
                     ❌ No posts found<br>
@@ -182,59 +260,117 @@
                 </div>
             `;
         } else {
-            let html = '';
-            for (let i = 0; i < last3Posts.length; i++) {
-                const post = last3Posts[i];
+            let html = '<div class="results-header">📊 Last 30 Posts (sorted by date)</div>';
+            
+            for (let i = 0; i < results.length; i++) {
+                const post = results[i];
                 const daysAgo = getDaysAgo(post.date);
                 const dateStr = post.date.toLocaleDateString();
+                const medal = i === 0 ? '🥇 ' : i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : '📌 ';
                 
                 html += `
                     <a href="${post.url}" target="_blank" class="post-item">
                         ${post.preview ? `<img src="${post.preview}" class="post-preview" crossorigin="anonymous">` : '<div class="post-preview-placeholder">📷</div>'}
                         <div class="post-info">
-                            <div class="post-days">📆 ${daysAgo}</div>
+                            <div class="post-days">${medal}${daysAgo}</div>
                             <div class="post-date">📅 ${dateStr}</div>
                             <div class="post-link">🔗 Open post →</div>
                         </div>
                     </a>
                 `;
             }
+            
             contentDiv.innerHTML = html;
         }
     }
-
-    async function autoScan() {
-        if (isScanning || scanCompleted) return;
+    
+    function updateBadgeWithResults(results) {
+        if (results.length > 0) {
+            const newestDays = getDaysAgo(results[0].date);
+            const oldestDays = getDaysAgo(results[results.length - 1].date);
+            badgeElement.innerHTML = `📅 ${newestDays} ago (${results.length} posts)<span class="badge-arrow">▼</span>`;
+            badgeElement.title = `Newest: ${newestDays} ago | Oldest: ${oldestDays} ago`;
+        } else {
+            badgeElement.innerHTML = `⚠️ No posts<span class="badge-arrow">▼</span>`;
+        }
+        badgeElement.classList.remove('scanning');
+    }
+    
+    async function startScan() {
+        if (isScanning) return;
         
+        stopScanning = false;
         isScanning = true;
+        scanCompleted = false;
+        currentScanPosts = [];
         
-        // Update badge to show scanning
+        // Update UI
+        const startBtn = document.querySelector('#startScanBtn');
+        const stopBtn = document.querySelector('#stopScanBtn');
+        const clearBtn = document.querySelector('#clearResultsBtn');
+        
+        if (startBtn) startBtn.disabled = true;
+        if (stopBtn) stopBtn.disabled = false;
+        if (clearBtn) clearBtn.disabled = true;
+        
+        const contentDiv = panelElement.querySelector('.panel-content');
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Scanning posts...<br><small>Opening posts to get exact dates...</small></div>';
+        
         badgeElement.innerHTML = '🔍 Scanning...';
         badgeElement.classList.add('scanning');
         
-        // Create and show panel with loading state
-        createPanel();
-        panelElement.classList.add('visible');
-        panelElement.querySelector('.panel-content').innerHTML = '<div class="loading-panel">🔍 Scanning posts...<br><small>Opening posts to get dates...</small></div>';
+        // Get the posts
+        currentScanPosts = await getLast30Posts();
         
-        // Get the 3 posts
-        const last3Posts = await getLast3PostsAutomatically();
+        // Update UI with results
+        updatePanelWithResults(currentScanPosts);
+        updateBadgeWithResults(currentScanPosts);
+        updateScanComplete(currentScanPosts);
         
-        // Update panel with results
-        await updatePanelWithResults(last3Posts);
+        if (startBtn) startBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+        if (clearBtn) clearBtn.disabled = false;
         
-        // Update badge with result
-        if (last3Posts.length > 0) {
-            const newestDays = getDaysAgo(last3Posts[0].date);
-            badgeElement.innerHTML = `📅 Last: ${newestDays}<span class="badge-arrow">▼</span>`;
-            badgeElement.title = 'Click to see last 3 posts';
-        } else {
-            badgeElement.innerHTML = `⚠️ No posts found`;
-        }
-        
-        badgeElement.classList.remove('scanning');
-        scanCompleted = true;
         isScanning = false;
+        scanCompleted = true;
+    }
+    
+    function stopScan() {
+        if (!isScanning) return;
+        
+        stopScanning = true;
+        isScanning = false;
+        
+        const startBtn = document.querySelector('#startScanBtn');
+        const stopBtn = document.querySelector('#stopScanBtn');
+        const stats = document.querySelector('#scanStats');
+        
+        if (startBtn) startBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+        if (stats) stats.textContent = '⏹ Scan stopped by user';
+        
+        badgeElement.innerHTML = `⏹ Stopped (${currentScanPosts.length} scanned)`;
+        setTimeout(() => {
+            if (!isScanning) {
+                updateBadgeWithResults(currentScanPosts);
+            }
+        }, 2000);
+    }
+    
+    function clearResults() {
+        currentScanPosts = [];
+        scanCompleted = false;
+        
+        const contentDiv = panelElement.querySelector('.panel-content');
+        contentDiv.innerHTML = '<div class="info-message">Results cleared. Click "Start Scan" to analyze posts.</div>';
+        
+        const stats = document.querySelector('#scanStats');
+        if (stats) stats.textContent = 'Ready to scan';
+        
+        const progressBar = document.querySelector('#scanProgress');
+        if (progressBar) progressBar.style.width = '0%';
+        
+        badgeElement.innerHTML = `📅 Ready<span class="badge-arrow">▼</span>`;
     }
 
     function createBadge() {
@@ -242,7 +378,7 @@
         
         badgeElement = document.createElement('div');
         badgeElement.id = 'ig-last-post-badge';
-        badgeElement.innerHTML = '⏳ Loading...';
+        badgeElement.innerHTML = '📅 Ready<span class="badge-arrow">▼</span>';
         
         const closeBtn = document.createElement('span');
         closeBtn.innerHTML = '×';
@@ -256,7 +392,6 @@
         document.body.appendChild(badgeElement);
         makeDraggable(badgeElement);
         
-        // Toggle panel on click (after scan is done)
         badgeElement.addEventListener('click', async (e) => {
             if (e.target.className === 'close-btn') return;
             
@@ -344,14 +479,14 @@
             }
             
             @keyframes pulse {
-                0% { opacity: 0.7; }
+                0%, 100% { opacity: 0.7; }
                 50% { opacity: 1; }
-                100% { opacity: 0.7; }
             }
             
             .badge-arrow {
                 font-size: 10px;
                 opacity: 0.7;
+                margin-left: 6px;
             }
             
             .close-btn {
@@ -370,8 +505,9 @@
                 top: 50%;
                 left: 50%;
                 transform: translate(-50%, -50%);
-                width: 380px;
+                width: 450px;
                 max-width: 90vw;
+                max-height: 80vh;
                 background: white;
                 border-radius: 16px;
                 box-shadow: 0 10px 40px rgba(0,0,0,0.3);
@@ -379,10 +515,11 @@
                 display: none;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 overflow: hidden;
+                flex-direction: column;
             }
             
             #ig-posts-panel.visible {
-                display: block;
+                display: flex;
             }
             
             .panel-header {
@@ -403,10 +540,96 @@
                 cursor: pointer;
             }
             
+            .panel-controls {
+                padding: 12px 16px;
+                background: #f0f0f0;
+                border-bottom: 1px solid #dbdbdb;
+            }
+            
+            .stats {
+                font-size: 12px;
+                color: #262626;
+                margin-bottom: 10px;
+                text-align: center;
+            }
+            
+            .buttons {
+                display: flex;
+                gap: 10px;
+                justify-content: center;
+                margin-bottom: 10px;
+            }
+            
+            .control-btn {
+                padding: 6px 16px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+                transition: all 0.2s;
+            }
+            
+            .control-btn.start {
+                background: #0095f6;
+                color: white;
+            }
+            
+            .control-btn.start:hover:not(:disabled) {
+                background: #0077cc;
+            }
+            
+            .control-btn.stop {
+                background: #ed4956;
+                color: white;
+            }
+            
+            .control-btn.stop:hover:not(:disabled) {
+                background: #c93542;
+            }
+            
+            .control-btn.clear {
+                background: #8e8e8e;
+                color: white;
+            }
+            
+            .control-btn.clear:hover:not(:disabled) {
+                background: #6e6e6e;
+            }
+            
+            .control-btn:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            
+            .progress-bar {
+                background: #dbdbdb;
+                border-radius: 10px;
+                overflow: hidden;
+                height: 6px;
+            }
+            
+            .progress-fill {
+                background: #0095f6;
+                width: 0%;
+                height: 100%;
+                transition: width 0.3s ease;
+            }
+            
             .panel-content {
-                max-height: 500px;
+                flex: 1;
                 overflow-y: auto;
                 background: #fafafa;
+            }
+            
+            .results-header {
+                padding: 12px 16px;
+                background: #fff;
+                font-weight: 600;
+                border-bottom: 1px solid #efefef;
+                position: sticky;
+                top: 0;
+                z-index: 1;
             }
             
             .post-item {
@@ -443,7 +666,7 @@
             
             .post-days {
                 font-weight: 700;
-                font-size: 15px;
+                font-size: 14px;
                 color: #0095f6;
             }
             
@@ -454,12 +677,12 @@
             }
             
             .post-link {
-                font-size: 12px;
+                font-size: 11px;
                 color: #8e8e8e;
                 margin-top: 4px;
             }
             
-            .loading-panel, .empty-panel {
+            .loading-panel, .empty-panel, .info-message {
                 text-align: center;
                 padding: 30px;
                 color: #8e8e8e;
@@ -475,65 +698,11 @@
         document.head.appendChild(style);
     }
 
-    // Function to check if profile page is ready
-    function waitForProfilePage() {
-        return new Promise((resolve) => {
-            const checkInterval = setInterval(() => {
-                const postCount = document.querySelectorAll('a[href*="/p/"]').length;
-                const header = document.querySelector('header');
-                
-                if (postCount > 0 || (header && window.location.pathname !== '/')) {
-                    clearInterval(checkInterval);
-                    resolve();
-                }
-            }, 500);
-            
-            setTimeout(() => {
-                clearInterval(checkInterval);
-                resolve();
-            }, 8000);
-        });
-    }
-
-    // Handle Instagram SPA navigation
-    function observeNavigation() {
-        let lastUrl = location.href;
-        const observer = new MutationObserver(() => {
-            if (location.href !== lastUrl) {
-                lastUrl = location.href;
-                scanCompleted = false;
-                isScanning = false;
-                
-                // Reset badge
-                if (badgeElement) {
-                    badgeElement.innerHTML = '⏳ Loading...';
-                }
-                
-                // Wait for new page to load, then auto-scan
-                setTimeout(() => {
-                    waitForProfilePage().then(() => {
-                        setTimeout(autoScan, 1500);
-                    });
-                }, 2000);
-            }
-        });
-        
-        observer.observe(document, { subtree: true, childList: true });
-    }
-
-    // Initialize
-    async function init() {
+    function init() {
         createBadge();
         addStyles();
-        observeNavigation();
-        
-        // Wait for profile to load, then auto-scan
-        await waitForProfilePage();
-        
-        // Extra delay for posts to render
-        setTimeout(() => {
-            autoScan();
-        }, 2000);
+        createPanel();
+        console.log('IG 30-Post Scanner ready - Click badge, then "Start Scan"');
     }
 
     if (document.readyState === 'loading') {
