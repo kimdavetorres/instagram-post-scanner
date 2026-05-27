@@ -17,8 +17,8 @@
         return `${diffDays} days ago`;
     }
 
-    // Sort posts by visual grid position (top-left first) using absolute document coordinates
-    function sortPostsByGridPosition(posts) {
+    // Sort posts by visual grid position (top-left first)
+    function sortByGridPosition(posts) {
         return posts.sort((a, b) => {
             const rectA = a.element.getBoundingClientRect();
             const rectB = b.element.getBoundingClientRect();
@@ -26,18 +26,14 @@
             const topB = rectB.top + window.scrollY;
             const leftA = rectA.left + window.scrollX;
             const leftB = rectB.left + window.scrollX;
-            
-            // Row tolerance: typical Instagram post height ~250-350px, use 200px to group same row
-            const rowTolerance = 200;
+            const rowTolerance = 200; // enough to group same row
             const sameRow = Math.abs(topA - topB) < rowTolerance;
-            if (sameRow) {
-                return leftA - leftB; // left to right
-            }
-            return topA - topB; // top to bottom
+            if (sameRow) return leftA - leftB;
+            return topA - topB;
         });
     }
 
-    // Scroll until we have enough posts (or no more load)
+    // Scroll until we have enough posts (with progress feedback)
     async function loadEnoughPosts() {
         const scrollableDiv = document.querySelector('main') || document.body;
         let lastCount = 0;
@@ -51,9 +47,8 @@
             window.scrollTo(0, document.body.scrollHeight);
             await new Promise(r => setTimeout(r, 400));
 
-            const currentLinks = document.querySelectorAll('a[href*="/p/"]');
-            const currentCount = currentLinks.length;
-            console.log(`Scrolled: found ${currentCount} posts`);
+            const currentCount = document.querySelectorAll('a[href*="/p/"]').length;
+            updateScanProgress(currentCount, totalPostsToScan, true); // loading phase
 
             if (currentCount === lastCount) {
                 noChangeCount++;
@@ -66,8 +61,7 @@
             if (currentCount >= totalPostsToScan) break;
         }
 
-        // Force reflow to ensure positions are accurate
-        document.body.offsetHeight;
+        document.body.offsetHeight; // force reflow
         await new Promise(r => setTimeout(r, 100));
     }
 
@@ -82,7 +76,10 @@
 
         const postsWithData = [];
         
-        for (const link of postsToProcess) {
+        for (let i = 0; i < postsToProcess.length; i++) {
+            if (stopScanning) break;
+            const link = postsToProcess[i];
+
             // Find the associated <time> element
             let timeEl = link.querySelector('time');
             if (!timeEl) {
@@ -90,7 +87,7 @@
                 if (parent) timeEl = parent.querySelector('time');
             }
             if (!timeEl) {
-                // Approximate by finding any nearby time element
+                // Fallback: find any time element nearby
                 const rect = link.getBoundingClientRect();
                 const allTimes = document.querySelectorAll('time');
                 for (const t of allTimes) {
@@ -119,19 +116,22 @@
                 date: postDate,
                 preview: previewImg
             });
+
+            // Update progress for reading phase
+            updateScanProgress(i + 1, totalPostsToScan, false);
+            await new Promise(r => setTimeout(r, 5)); // tiny yield for UI
         }
 
         // Sort by visual grid position (top-left first)
-        const sorted = sortPostsByGridPosition(postsWithData);
+        const sorted = sortByGridPosition(postsWithData);
         console.log('Sorted posts (top-left to bottom-right):', sorted.map(p => p.url));
 
-        // Convert to final results, estimate if date missing
         const results = [];
         for (let i = 0; i < sorted.length; i++) {
             let date = sorted[i].date;
             let estimated = false;
             if (!date) {
-                // Fallback: estimate based on position (rare case)
+                // Fallback: estimate based on position (rare)
                 date = new Date();
                 date.setDate(date.getDate() - i * 2);
                 estimated = true;
@@ -151,7 +151,7 @@
         return results;
     }
 
-    // ========== UI (unchanged, but updated messages) ==========
+    // ========== UI functions (with progress phases) ==========
     function createPanel() {
         if (panelElement) return;
         panelElement = document.createElement('div');
@@ -170,7 +170,7 @@
                     <div id="progressText" class="progress-text">0 / ${totalPostsToScan}</div>
                 </div>
             </div>
-            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – reads dates directly from grid (no posts open). Very fast!</div></div>
+            <div class="panel-content"><div class="info-message">📌 Click "Start Scan" – reads dates directly from grid (no posts open). Super fast!</div></div>
         `;
         document.body.appendChild(panelElement);
         panelElement.querySelector('.panel-close').onclick = () => panelElement.classList.remove('visible');
@@ -179,15 +179,22 @@
         panelElement.querySelector('#clearResultsBtn').onclick = () => clearResults();
     }
 
-    function updateScanProgress(current, total) {
-        const percent = (current / total) * 100;
+    function updateScanProgress(current, total, isLoadingPhase = false) {
+        const percent = Math.min(100, (current / total) * 100);
         const progressBar = document.querySelector('#scanProgress');
         const progressText = document.querySelector('#progressText');
         if (progressBar) progressBar.style.width = `${percent}%`;
         if (progressText) progressText.textContent = `${current} / ${total}`;
         if (badgeElement) badgeElement.innerHTML = `🔍 ${current}/${total}`;
+        
         const stats = document.querySelector('#scanStats');
-        if (stats) stats.textContent = `🔍 Loading posts... ${current} of ${total} loaded`;
+        if (stats) {
+            if (isLoadingPhase) {
+                stats.textContent = `📜 Loading posts... ${current} found so far`;
+            } else {
+                stats.textContent = `🔍 Reading dates... ${current} of ${total} processed`;
+            }
+        }
     }
 
     function updateScanComplete(results, loadedCount) {
@@ -264,7 +271,7 @@
         if (clearBtn) clearBtn.disabled = true;
 
         const contentDiv = panelElement.querySelector('.panel-content');
-        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts and reading dates directly from grid...<br><small>No posts open. Very fast!</small></div>';
+        contentDiv.innerHTML = '<div class="loading-panel">🔍 Loading posts and reading dates directly from grid...<br><small>No posts will open. Fast scanning.</small></div>';
 
         badgeElement.innerHTML = '🔍 0/30';
         badgeElement.classList.add('scanning');
@@ -466,7 +473,7 @@
         createBadge();
         addStyles();
         createPanel();
-        console.log('✅ Optimized Instagram Scanner — reads dates directly from grid, super fast!');
+        console.log('✅ Optimized Instagram Scanner — reads dates directly from grid (super fast).');
     }
 
     if (document.readyState === 'loading') {
